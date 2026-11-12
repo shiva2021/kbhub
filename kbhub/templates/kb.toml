@@ -1,0 +1,17 @@
+# Marks this folder as a kbhub knowledge-base project. Edits are picked up on the next sync.
+name = "{{name}}"
+
+# Optional file rules. For each key (status / doc_type) the first matching rule wins.
+# Globs are case-insensitive, relative to this folder, and `*` also crosses folders.
+# status: current (default) | background | superseded (hidden from search unless asked for)
+#
+# [[rules]]
+# glob = "knowledge-base/research/old-approach/**"
+# status = "superseded"
+# note = "Replaced by D-004"
+
+# Optional retrieval checks, run with `kbhub eval {{name}}`.
+#
+# [[eval]]
+# question = "What did we decide about X?"
+# expect = "decisions"        # substring of the file path that should come back

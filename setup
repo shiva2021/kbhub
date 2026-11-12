@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# kbhub setup: installs what is missing, asks where your projects live, connects kbhub to Claude
+# Code and builds the first index. Safe to run again at any time.
+#
+#   ~/.kbhub/setup          ask a few questions (Enter accepts each suggestion)
+#   ~/.kbhub/setup --yes    accept every suggestion without asking
+set -euo pipefail
+cd "$(dirname "$0")"
+
+if [ "$(uname -s)" != "Darwin" ] && [ -z "${KBHUB_ANY_PLATFORM:-}" ]; then
+  echo "kbhub supports macOS only for now." >&2
+  exit 1
+fi
+if [ "$(uname -m)" != "arm64" ] && [ -z "${KBHUB_ANY_PLATFORM:-}" ]; then
+  echo "kbhub needs a Mac with Apple silicon (M1 or newer): its search library has no Intel build." >&2
+  exit 1
+fi
+
+# Tools installed a moment ago (uv, Claude Code, Homebrew programs) are not on PATH yet in this
+# shell; look in the places they land. The wizard is told the shell's own PATH so it can warn.
+export KBHUB_ORIG_PATH="$PATH"
+extra="${KBHUB_EXTRA_PATH-/opt/homebrew/bin:/usr/local/bin}"
+export PATH="$HOME/.local/bin:${extra:+$extra:}$PATH"
+
+yes=0
+for arg in "$@"; do
+  case "$arg" in --yes|-y|--wire-only) yes=1 ;; esac
+done
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "kbhub runs on uv, a small tool that also brings its own Python. It is not installed yet."
+  if [ "$yes" = 0 ] && [ -t 0 ]; then
+    read -r -p "Install uv now? (Y/n) " answer
+    case "$answer" in n*|N*) echo "Stopped: kbhub cannot run without uv." >&2; exit 1 ;; esac
+  fi
+  echo "Installing uv…"
+  if ! installer="$(curl -LsSf https://astral.sh/uv/install.sh)" || ! sh -c "$installer" || ! command -v uv >/dev/null 2>&1; then
+    echo "uv could not be installed. Install it by hand (https://astral.sh/uv), then run this again." >&2
+    exit 1
+  fi
+fi
+
+echo "Preparing kbhub (the first run downloads Python and its libraries; allow a few minutes)…"
+uv sync --inexact --quiet
+exec uv run python -m kbhub.setup "$@"

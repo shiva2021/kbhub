@@ -1,0 +1,47 @@
+# kbhub global config. `kbhub setup` writes config.toml for you; this file shows every key.
+# Every key is optional; the values below are the defaults. `~` is expanded.
+# Changing chunk sizes or the [embedding] table triggers a full index rebuild on the next sync.
+
+# Folders searched for standalone knowledge bases (any folder containing a .kb.toml).
+scan_roots = ["~"]
+
+# How many folder levels below each scan root are searched for .kb.toml markers.
+scan_depth = 3
+
+# Folders never searched for .kb.toml markers.
+# Folders inside a git work tree are always skipped, whatever this says.
+exclude_dirs = []
+
+# Standalone knowledge bases outside the scan roots (`kbhub add-project` maintains this list).
+explicit_projects = []
+
+# Where `kbhub new-project <name>` creates new standalone knowledge bases.
+new_project_parent = "~"
+
+# Sections larger than this (tokens ≈ characters / 4) are split into several chunks.
+max_chunk_tokens = 450
+
+# Markdown files larger than this many bytes are skipped with a warning.
+max_file_bytes = 2000000
+
+# Folders whose knowledge bases are personal, not work. Searches stay inside the session's scope
+# (personal or work) unless a project or `scope = "all"` is given.
+personal_roots = []
+
+# Scope of a knowledge base that is not under a personal root, and of a session in an unknown folder.
+default_scope = "work"
+
+# `kbhub scan` looks under these folders (into git repos too) for knowledge-base folders that
+# are not registered yet. Scanning only reports; `kbhub register <path>` adds them.
+kb_scan_roots = ["~"]
+kb_scan_depth = 7
+
+# Folder names (or trailing paths) that `scan` treats as knowledge bases.
+kb_folder_names = ["knowledge-base", "knowledge_base", "docs/kb"]
+
+[embedding]
+# "ollama":    best quality; needs Ollama running with the model below pulled.
+# "wordllama": bundled static model, fully offline, zero setup (lower quality).
+backend = "ollama"
+ollama_model = "nomic-embed-text"
+ollama_url = "http://localhost:11434"
