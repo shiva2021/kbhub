@@ -1,4 +1,4 @@
-# kbhub
+# kbhub : Knowledge Base Hub
 
 **kbhub gives Claude Code a memory for your projects.** You keep notes about a project as plain
 text files: what was decided and why, research, how-to guides, where the work was left. kbhub keeps
