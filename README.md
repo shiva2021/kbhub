@@ -209,3 +209,7 @@ uv run pytest -q
 
 Code is in `kbhub/`, the session hook in `hooks/`, the skills in `skill/`, tests in `tests/`.
 Tests never touch your real home folder or Claude Code settings.
+
+## Licence
+
+kbhub is released under the [MIT License](LICENSE): free to use, change and share, with no warranty.
