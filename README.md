@@ -145,11 +145,51 @@ Start with `kbhub doctor`: it names the problem and the fix. The common ones:
 
 ## How it works
 
-Your notes are split into sections and stored in a small local database (LanceDB) in
-`~/.kbhub/db`, both as text and as "embeddings" (numbers that capture meaning, made by Ollama or
-the built-in model). A search combines word matching with meaning matching and returns the best
-few sections with their file and line numbers. Claude Code reaches it through a local tool server
-(MCP) that starts with each session; the index refreshes itself whenever files change.
+```mermaid
+flowchart LR
+    notes["Your notes<br/>Markdown files in<br/>knowledge-base folders"]
+    claude["Claude Code<br/>(you ask a question)"]
+
+    subgraph kbhub["kbhub, on your Mac"]
+        direction TB
+        indexer["Indexer<br/>splits notes into sections"]
+        embed["Embedding model<br/>Ollama, or the built-in model"]
+        db[("LanceDB<br/>vector database<br/>~/.kbhub/db")]
+        server["Tool server (MCP)<br/>search_kb, get_section, ..."]
+        indexer --> embed --> db
+        db --> server
+    end
+
+    notes -->|"read when files change"| indexer
+    claude -->|"searches"| server
+    server -->|"best few sections,<br/>with file and line numbers"| claude
+```
+
+In words:
+
+1. **Index.** kbhub reads your notes and splits them into sections, following the headings.
+2. **Embed.** Each section is turned into an "embedding": a list of numbers that captures its
+   meaning, made by Ollama or the built-in model.
+3. **Store.** Text and embeddings go into LanceDB, a small vector database that is just a folder
+   on your Mac (`~/.kbhub/db`). There is no database server to run.
+4. **Search.** A search matches by meaning (embeddings) and by exact words (keywords) at the same
+   time, merges the two lists, and returns the best few sections with their file and line numbers.
+5. **Connect.** Claude Code reaches all this through a local tool server (MCP) that starts with
+   each session. The index refreshes itself whenever your files change.
+
+### What it is built with
+
+| Part | What is used | Why |
+| --- | --- | --- |
+| Vector database | [LanceDB](https://lancedb.com) | Runs inside kbhub as a folder of files; does both meaning search and keyword search. |
+| Embedding model | [Ollama](https://ollama.com) with `nomic-embed-text` | Runs on your Mac, free, good search quality. |
+| Fallback model | [WordLlama](https://github.com/dleemiller/WordLlama) | Small and built in; used when Ollama is not installed or not running. |
+| Search method | Hybrid search: vectors plus keywords, merged by reciprocal rank fusion | Finds notes by meaning and by exact names such as ticket numbers. |
+| Link to Claude Code | [MCP](https://modelcontextprotocol.io) tool server, plus a skill, a session-start hook and a rule in `CLAUDE.md` | Claude searches by itself, in every session. |
+| Language and tooling | Python 3.13, run by [uv](https://docs.astral.sh/uv/) | uv brings its own Python, so there is nothing else to install. |
+| Your notes | Plain Markdown files | Open in any editor; the index is only a copy of them. |
+
+Everything in this table runs on your Mac. Nothing is sent to a cloud service.
 
 Knowledge bases inside code projects are listed in `~/.kbhub/registry.json`, so nothing extra is
 ever written into your projects. Details, every command and every setting:
