@@ -15,7 +15,8 @@ exclude_dirs = []
 # Standalone knowledge bases outside the scan roots (`kbhub add-project` maintains this list).
 explicit_projects = []
 
-# Where `kbhub new-project <name>` creates new standalone knowledge bases.
+# Your knowledge-base folder: where new knowledge bases are created. A code project's go to
+# <new_project_parent>/<project>/<topic>, so this must be outside every git repository.
 new_project_parent = "~"
 
 # Sections larger than this (tokens ≈ characters / 4) are split into several chunks.

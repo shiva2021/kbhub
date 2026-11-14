@@ -29,7 +29,7 @@ def test_all_defaults_installs_everything_and_wires_claude(machine):
     launcher = home / ".local" / "bin" / "kbhub"
     assert launcher.is_file() and launcher.stat().st_mode & 0o111 and "/fake/bin/uv" in launcher.read_text()
     text = "\n".join(said)
-    assert "[1/6]" in text and "[6/6]" in text and "create a knowledge base" in text
+    assert "[1/6]" in text and "[6/6]" in text and "keep a knowledge base" in text
     GlobalConfig.load(home / ".kbhub" / "config.toml")      # what was written is a valid config
 
 

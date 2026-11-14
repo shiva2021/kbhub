@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from . import kbregistry
+from . import kbregistry, prefs
 from .config import GlobalConfig, ProjectConfig
 
 MARKER = ".kb.toml"
@@ -220,13 +220,42 @@ def session_scope(cfg: GlobalConfig, cwd: Path, projects: dict[str, Project]) ->
     return project.scope if project is not None else resolve_scope(cfg, cwd)
 
 
-def repo_projects(projects: dict[str, Project], cwd: Path) -> list[Project]:
-    """Knowledge bases registered for the repo that contains `cwd` (a worktree maps to its main clone)."""
+def project_slug(repo: Path) -> str:
+    """Folder (and name prefix) of a repo's standalone knowledge bases: its folder name without
+    leading dots, because hidden folders are never indexed (`.kbhub` -> `kbhub`)."""
+    return repo.name.lstrip(".") or repo.name
+
+
+def standalone_parent(cfg: GlobalConfig, repo: Path) -> Path:
+    """Where a repo's standalone knowledge bases live: `<new_project_parent>/<slug>/`."""
+    return cfg.new_project_parent / project_slug(repo)
+
+
+def repo_projects(projects: dict[str, Project], cwd: Path, cfg: GlobalConfig | None = None) -> list[Project]:
+    """Knowledge bases of the repo that contains `cwd` (a worktree maps to its main clone): those
+    registered inside it and, when `cfg` is given, the standalone ones kept for it. A standalone
+    knowledge base belongs to the repo when it was linked to it (`prefs`), is named `<slug>` or
+    `<slug>/...`, or lives under `<new_project_parent>/<slug>/`."""
     root = kbregistry.git_root(cwd)
     if root is None:
         return []
-    key = _key(kbregistry.main_clone(root))
-    return [p for p in projects.values() if p.repo is not None and key is not None and _key(p.repo) == key]
+    repo = kbregistry.main_clone(root)
+    key = _key(repo)
+    if key is None:
+        return []
+    mine = [p for p in projects.values() if p.repo is not None and _key(p.repo) == key]
+    if cfg is None:
+        return mine
+    slug = project_slug(repo).casefold()
+    parent = standalone_parent(cfg, repo)
+    links = {k for k in map(_key, prefs.linked(repo)) if k}
+    for p in projects.values():
+        if p.repo is not None or is_within(p.path, repo):
+            continue  # registered for a repo (this one is already counted), or a file tree of this repo
+        name = p.name.casefold()
+        if name == slug or name.startswith(slug + "/") or _key(p.path) in links or is_within(p.path, parent):
+            mine.append(p)
+    return mine
 
 
 def project_for_path(projects: dict[str, Project], path: Path) -> Project | None:

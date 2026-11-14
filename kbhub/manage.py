@@ -1,6 +1,7 @@
 """Creating, registering and finding knowledge bases wherever they live, including inside git
-repos. Registered knowledge bases are recorded in the central registry (`kbregistry`); nothing is
-ever written into a repo except the knowledge files themselves, and nothing is staged or committed."""
+repos. Registered knowledge bases are recorded in the central registry (`kbregistry`). A knowledge
+base for a code base is created outside it unless `in_repo` is asked for; then only the knowledge
+files themselves are written into the repo, and nothing is staged or committed."""
 from __future__ import annotations
 
 import json
@@ -8,10 +9,10 @@ import os
 from datetime import date
 from pathlib import Path
 
-from . import kbregistry
+from . import kbregistry, prefs
 from .config import SCOPES, STATUSES, GlobalConfig, ProjectConfig
 from .registry import (MARKER, SKIP_DIRS, skip_child, Project, _key, discover_projects, is_within, new_project,
-                       project_for_path, resolve_scope)
+                       project_for_path, project_slug, repo_projects, resolve_scope, standalone_parent)
 
 KB_DIR = "knowledge-base"
 REPO_TEMPLATES = Path(__file__).parent / "templates" / "repo"
@@ -143,31 +144,69 @@ def _check_topic(topic: str) -> None:
         raise ValueError(f"invalid topic {topic!r}: use a plain folder name such as 'billing'")
 
 
+def _standalone_home(cfg: GlobalConfig, repo: Path) -> Path:
+    """`<new_project_parent>/<slug>/` for a repo, refused when that is itself inside a repo."""
+    parent = standalone_parent(cfg, repo)
+    if kbregistry.git_root(parent) is not None:
+        raise ValueError(f"{parent} is inside a git repository, and a knowledge base is never written into a "
+                         f"code base unasked. Set new_project_parent in {cfg.path} to a folder outside every repo")
+    return parent
+
+
+def _retitle(folder: Path, topic: str, name: str, repo: Path | None) -> None:
+    """The starter files are written for the folder name; make them carry the project name, and
+    say which code base the notes are about."""
+    swaps = [(f"# {topic}\n", f"# {name}\n"), (f"# STATE: {topic}\n", f"# STATE: {name}\n"),
+             (f"(project `{topic}`)", f"(project `{name}`)")]
+    if repo is not None:
+        swaps.append(("## Links\n", f"## Links\n- Code base: `{repo}` (these notes are kept outside it)\n"))
+    for rel in ("CLAUDE.md", "STATE.md"):
+        path = folder / rel
+        text = path.read_text(encoding="utf-8")
+        for old, new in swaps:
+            text = text.replace(old, new, 1)
+        path.write_text(text, encoding="utf-8")
+
+
 def create_kb(cfg: GlobalConfig, topic: str, location=None, name: str | None = None,
-              scope: str | None = None) -> Project:
-    """Create a new knowledge base. Inside a git repo: `<checkout root>/knowledge-base/<topic>/`
-    (flat layout, no .kb.toml), registered centrally. Elsewhere: the standard project layout with
-    a .kb.toml, as `new_project` does. Only writes files; never stages or commits. Everything is
-    checked before the first file is written."""
+              scope: str | None = None, in_repo: bool = False) -> Project:
+    """Create a new knowledge base. For a git repo: `<new_project_parent>/<repo>/<topic>/`, outside
+    the repo, named `<repo>/<topic>` and linked to it; with `in_repo`, instead
+    `<checkout root>/knowledge-base/<topic>/` (flat layout, no .kb.toml), registered centrally.
+    For any other folder: the standard project layout with a .kb.toml inside it, as `new_project`
+    does. Only writes files; never stages or commits. Everything is checked before the first file
+    is written."""
     _check_topic(topic)
     _check_scope(scope)
     where = _abs(location) if location is not None else cfg.new_project_parent
     root = kbregistry.git_root(where)
-    if root is None:
-        project = new_project(cfg, topic, parent=where if location is not None else None)
-        if not (name or scope):
-            return project
-        marker = project.path / MARKER
-        text = marker.read_text(encoding="utf-8")
-        if name:
-            text = text.replace(f'name = "{topic}"', f"name = {json.dumps(name)}", 1)
-        if scope:
-            text += f'\nscope = "{scope}"\n'
-        marker.write_text(text, encoding="utf-8")
-        pc = ProjectConfig.load(marker)
-        final_scope = resolve_scope(cfg, project.path, pc.scope)
-        return Project(pc.name or project.name, project.path, pc, scope=final_scope,
-                       fingerprint=f"{pc.fingerprint}:{final_scope}")
+    repo = None
+    if root is not None and not in_repo:
+        repo = kbregistry.main_clone(root)
+        where = _standalone_home(cfg, repo)
+        name = (name or f"{project_slug(repo)}/{topic}").strip()
+        scope = scope or resolve_scope(cfg, repo)
+        folder = where / topic
+        _check_name_free(cfg, name, folder, {"path": str(folder)}, kbregistry.load_entries(cfg)[0])
+    if root is None or repo is not None:
+        project = new_project(cfg, topic, parent=where if location is not None or repo is not None else None)
+        if name or scope:
+            marker = project.path / MARKER
+            text = marker.read_text(encoding="utf-8")
+            if name:
+                text = text.replace(f'name = "{topic}"', f"name = {json.dumps(name)}", 1)
+            if scope:
+                text += f'\nscope = "{scope}"\n'
+            marker.write_text(text, encoding="utf-8")
+            pc = ProjectConfig.load(marker)
+            final_scope = resolve_scope(cfg, project.path, pc.scope)
+            project = Project(pc.name or project.name, project.path, pc, scope=final_scope,
+                              fingerprint=f"{pc.fingerprint}:{final_scope}")
+        if name and name != topic:
+            _retitle(project.path, topic, name, repo)
+        if repo is not None:
+            prefs.link_kb(repo, project.path)
+        return project
 
     folder = root / KB_DIR / topic
     if folder.exists() and (not folder.is_dir() or any(folder.iterdir())):
@@ -184,6 +223,45 @@ def create_kb(cfg: GlobalConfig, topic: str, location=None, name: str | None = N
             text = text.replace(token, value)
         (folder / template.name).write_text(text, encoding="utf-8")
     return register_kb(cfg, folder, name=name, scope=scope)
+
+
+FIRST_TOPIC = "general"
+
+
+def setup_project_kb(cfg: GlobalConfig, where, enable: bool, scope: str | None = None) -> dict:
+    """Record whether the user wants a knowledge base for the repo containing `where` and, on yes,
+    make sure there is one: the knowledge bases it already has, else knowledge-base folders found
+    in the repo (registered; nothing is written there), else a new `<repo>/general` outside the
+    repo. Returns {"repo", "enabled", "projects", "found", "registered", "created", "skipped"}."""
+    _check_scope(scope)
+    where = _abs(where)
+    root = kbregistry.git_root(where)
+    if root is None:
+        raise ValueError(f"{where} is not inside a git repository; create a standalone knowledge base with "
+                         "create_kb(name) instead")
+    repo = kbregistry.main_clone(root)
+    prefs.set_choice(repo, enable)
+    result = {"repo": repo, "enabled": enable, "projects": [], "found": False, "registered": False,
+              "created": False, "skipped": []}
+    if not enable:
+        return result
+    mine = repo_projects(discover_projects(cfg, session_dir=where)[0], where, cfg)
+    if mine:
+        result.update(projects=sorted(mine, key=lambda p: p.name.lower()), found=True)
+        return result
+    for candidate in scan(cfg, root):
+        if candidate["registered"]:
+            continue
+        try:
+            result["projects"].append(register_kb(cfg, candidate["path"], scope=scope))
+        except ValueError as exc:
+            result["skipped"].append(f"{candidate['path']}: {exc}")
+    if result["projects"]:
+        result["registered"] = True
+        return result
+    result["projects"] = [create_kb(cfg, FIRST_TOPIC, location=where, scope=scope)]
+    result["created"] = True
+    return result
 
 
 def _find_project(cfg: GlobalConfig, name: str) -> Project:

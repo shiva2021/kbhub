@@ -7,7 +7,8 @@
     kbhub projects
     kbhub scan [ROOT]                       find knowledge-base folders that are not registered
     kbhub register PATH [--name N]          register a folder (works inside git repos)
-    kbhub new-kb TOPIC [--in DIR]           new knowledge base; in a repo: <repo>/knowledge-base/<topic>/
+    kbhub new-kb TOPIC [--in DIR] [--in-repo]   new knowledge base for a repo (kept outside it unless --in-repo)
+    kbhub kb on|off|status [PATH]           keep a knowledge base for a code base, or not; ask no more
     kbhub rule add PROJECT GLOB --status superseded
     kbhub unregister NAME
     kbhub add-project PATH [--name N]       (folders outside git repos, with a .kb.toml)
@@ -74,11 +75,16 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("path")
     p.add_argument("--name")
     p.add_argument("--scope")
-    p = sub.add_parser("new-kb", help="create a knowledge base; inside a repo it goes to <repo>/knowledge-base/<topic>/")
+    p = sub.add_parser("new-kb", help="create a knowledge base; for a repo it goes to <knowledge-base folder>/<repo>/<topic>/")
     p.add_argument("topic")
     p.add_argument("--in", dest="location", help="folder to create it for (default: the current repo, else the configured parent)")
     p.add_argument("--name")
     p.add_argument("--scope")
+    p.add_argument("--in-repo", action="store_true", help="write it into the repo, at <repo>/knowledge-base/<topic>/")
+    p = sub.add_parser("kb", help="say whether a code base gets a knowledge base (sessions then stop asking)")
+    p.add_argument("choice", choices=("on", "off", "status"))
+    p.add_argument("path", nargs="?", help="a folder of the code base (default: the current folder)")
+    p.add_argument("--scope", help="work or personal, for a knowledge base that `on` creates")
     p = sub.add_parser("rule", help="status / doc-type rules of a registered knowledge base")
     rule = p.add_subparsers(dest="rule_cmd", required=True)
     p = rule.add_parser("add")
@@ -109,7 +115,7 @@ def _run(a: argparse.Namespace) -> int:
         print(project.path)
         return 0
 
-    if a.cmd in ("scan", "register", "new-kb", "rule", "unregister"):
+    if a.cmd in ("scan", "register", "new-kb", "kb", "rule", "unregister"):
         return _manage(a)
 
     if a.cmd == "cowork-skill":
@@ -193,7 +199,30 @@ def _manage(a: argparse.Namespace) -> int:
         location = a.location
         if location is None and kbregistry.git_root(Path(os.getcwd())) is not None:
             location = os.getcwd()
-        print(manage.create_kb(cfg, a.topic, location, a.name, a.scope).path)
+        print(manage.create_kb(cfg, a.topic, location, a.name, a.scope, a.in_repo).path)
+    elif a.cmd == "kb":
+        where = Path(os.path.abspath(os.path.expanduser(a.path or os.getcwd())))
+        if a.choice == "status":
+            from . import prefs
+            from .registry import discover_projects, repo_projects
+            root = kbregistry.git_root(where)
+            if root is None:
+                raise ValueError(f"{where} is not inside a git repository")
+            repo = kbregistry.main_clone(root)
+            print(f"{repo}: {prefs.get_choice(repo) or 'not asked yet'}")
+            for project in sorted(repo_projects(discover_projects(cfg, session_dir=where)[0], where, cfg),
+                                  key=lambda p: p.name.lower()):
+                print(f"  {project.name}  [{project.scope}]  {project.path}")
+        else:
+            done = manage.setup_project_kb(cfg, where, a.choice == "on", a.scope)
+            print(f"{done['repo']}: {a.choice}")
+            for project in done["projects"]:
+                state = "created" if done["created"] else "registered" if done["registered"] else "found"
+                print(f"  {state}  {project.name}  [{project.scope}]  {project.path}")
+            for skipped in done["skipped"]:
+                print(f"  not registered: {skipped}")
+            if done["created"]:
+                print("Run `kbhub index` to make it searchable now (sessions index it by themselves).")
     elif a.cmd == "rule":
         manage.add_rule(cfg, a.project, a.glob, a.status, a.doc_type, a.note)
         print(f"rule added to {a.project}")

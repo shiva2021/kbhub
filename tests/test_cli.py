@@ -136,12 +136,12 @@ def core(kb_home, scan_root, make_repo):
 
 def test_new_kb_in_repo_then_search(core, capsys, monkeypatch):
     monkeypatch.chdir(core / "src")
-    assert main(["new-kb", "billing"]) == 0
+    assert main(["new-kb", "billing", "--in-repo"]) == 0
     assert capsys.readouterr().out.strip() == str(core / "knowledge-base" / "billing")
     (core / "knowledge-base" / "billing" / "decisions.md").write_text("# Decisions\n\n## D-001: Ledger\nBilling uses the quokka ledger.\n")
     assert main(["search", "quokka ledger", "--project", "core"]) == 0
     assert "[1] core/billing · decisions.md:3-4 | decisions | current" in capsys.readouterr().out
-    assert main(["new-kb", "payroll", "--in", str(core), "--name", "Payroll KB", "--scope", "personal"]) == 0
+    assert main(["new-kb", "payroll", "--in", str(core), "--in-repo", "--name", "Payroll KB", "--scope", "personal"]) == 0
     capsys.readouterr()
     assert main(["projects"]) == 0
     out = capsys.readouterr().out
@@ -205,3 +205,22 @@ def test_rule_add_and_unregister(core, capsys):
 def test_register_repo_root_exit_1(core, capsys):
     assert main(["register", str(core)]) == 1
     assert "repo root" in capsys.readouterr().err
+
+
+def test_new_kb_for_repo_goes_outside_it_and_kb_command(core, scan_root, capsys, monkeypatch):
+    monkeypatch.chdir(core / "src")
+    assert main(["kb", "status"]) == 0
+    assert capsys.readouterr().out.strip() == f"{core}: not asked yet"
+    assert main(["kb", "off"]) == 0 and capsys.readouterr().out.strip() == f"{core}: off"
+    assert main(["new-kb", "billing"]) == 0
+    folder = scan_root / "core" / "billing"
+    assert capsys.readouterr().out.strip() == str(folder)
+    assert not (core / "knowledge-base").exists() and not list(core.rglob(".kb.toml"))
+    assert main(["kb", "on", str(core)]) == 0
+    out = capsys.readouterr().out
+    assert f"{core}: on" in out and "found  core/billing" in out
+    assert main(["kb", "status"]) == 0
+    out = capsys.readouterr().out
+    assert f"{core}: on" in out and str(folder) in out
+    monkeypatch.chdir(scan_root)
+    assert main(["kb", "status"]) == 1 and "not inside a git repository" in capsys.readouterr().err

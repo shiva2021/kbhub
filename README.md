@@ -22,8 +22,11 @@ The usual fix is a folder of notes. That helps, but then:
 
 - **Claude finds the right note by itself.** Ask "why do we round invoices this way?" and it
   searches the index and reads only the section that answers it.
-- **Notes live where they belong.** Inside a code project (`<project>/knowledge-base/<topic>/`,
-  saved together with the code) or in a standalone folder for research and planning.
+- **Claude asks once, then keeps notes for you.** The first time you work in a project it asks
+  whether to keep a knowledge base for it, and remembers your answer.
+- **Your projects stay untouched.** Notes about a project are kept in a folder of their own,
+  outside it. If you prefer, a topic's notes can live inside the project
+  (`<project>/knowledge-base/<topic>/`) and be saved together with the code.
 - **One place to search, wherever the notes are.** Every knowledge base on your Mac is in the same
   index, across all projects.
 - **Outdated notes are marked, not deleted.** Mark a note "superseded" and it stops showing up
@@ -65,14 +68,16 @@ What setup asks:
 | Install Ollama? | A free app that lets search understand meaning, not only matching words. About 1.5 GB. Say no to use a smaller built-in model: nothing to install, weaker search. | Installed |
 | Where do your projects live? | The folder that holds your code or research projects. | The folder it suggests |
 | Folder of personal projects? | Optional. Notes under it are kept apart from work notes. | None |
-| Where should other knowledge bases go? | For notes that belong to no code project. | `~/knowledge-bases` |
+| Where should your knowledge bases go? | The folder your notes are kept in, outside your projects. | `~/knowledge-bases` |
 | Add `<folder>` to the index? | Asked for each folder of notes it finds in your projects. | Added |
 
 What setup changes on your Mac:
 
 - `~/.kbhub`: the program, your settings (`config.toml`) and the search index;
+- `~/.kbhub-config`: your answer, per project, to "keep a knowledge base for this project?";
 - Claude Code: adds the kbhub search tools, a skill, a short rule in `~/.claude/CLAUDE.md`, and a
-  start-up note that tells each session which knowledge bases exist;
+  start-up note that tells each session which knowledge bases exist and whether to ask you about
+  one;
 - `~/.local/bin/kbhub`: the `kbhub` command, plus (if you agree) one line in `~/.zshrc` so the
   Terminal finds it;
 - the programs you said yes to: uv, Claude Code, Ollama.
@@ -90,16 +95,24 @@ then run the line again.
 
 ## Your first knowledge base
 
-Open Claude Code inside one of your projects and say:
+Open Claude Code inside one of your projects (a git repository). The first time, before it starts
+on your request, Claude asks:
 
-> create a knowledge base for billing
+> Should kbhub keep a knowledge base for this project?
 
-Claude creates `knowledge-base/billing/` in that project with a few starter files (current state,
-decisions, lessons, open items) and adds it to the index. From then on, tell Claude what you
-decide and it writes it down; ask what was decided and it looks it up.
+- **Yes:** Claude looks for notes this project already has. If there are none, it creates a
+  knowledge base called `<project>/general` in your knowledge-base folder (the one you chose at
+  setup, `~/knowledge-bases` unless you changed it), with a few starter files (current state,
+  decisions, lessons, open items), and adds it to the index. From then on, tell Claude what you
+  decide and it writes it down; ask what was decided and it looks it up.
+- **No:** Claude does not bring it up again in that project.
 
-The files are ordinary text. Save them with your project the way you save the rest of it
-(with git: commit them together with the change they describe).
+You are asked once per project. To change your answer, run `kbhub kb on` or `kbhub kb off` inside
+the project (`kbhub kb status` shows the current answer).
+
+The notes are kept **outside** your project, so nothing in the project changes. They are ordinary
+text files. If you would rather keep a topic's notes inside the project and save them with the
+code, say "create a knowledge base for billing inside this repo".
 
 ## Everyday use
 
@@ -109,6 +122,8 @@ You mostly just talk to Claude. Some things worth knowing:
 | --- | --- | --- |
 | Find something | "what did we decide about refunds?" | `kbhub search "refund decision"` |
 | Start notes for a new topic | "create a knowledge base for search" | `kbhub new-kb search` (inside the project) |
+| Keep a topic's notes in the project | "create a knowledge base for search inside this repo" | `kbhub new-kb search --in-repo` |
+| Stop or start notes for a project | "don't keep a knowledge base for this project" | `kbhub kb off` / `kbhub kb on` |
 | Start notes not tied to code | "create a standalone knowledge base called market-research" | `kbhub new-project market-research` |
 | Record a decision | "record that we chose Postgres, and why" | edit `decisions.md` |
 | Pick up where I left off | "where are we up to?" | open the `STATE.md` file |

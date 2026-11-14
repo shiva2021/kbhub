@@ -7,8 +7,9 @@ import pytest
 
 from kbhub import kbregistry as kr
 from kbhub.config import GlobalConfig
-from kbhub.manage import add_rule, create_kb, register_kb, unregister
-from kbhub.registry import discover_projects
+from kbhub import prefs
+from kbhub.manage import add_rule, create_kb, register_kb, setup_project_kb, unregister
+from kbhub.registry import discover_projects, repo_projects
 
 LAYOUT_FILES = ("README.md", "STATE.md", "decisions.md", "lessons.md", "open-items.md")
 LAYOUT_DIRS = ("runbooks", "research", "plans", "handovers")
@@ -90,7 +91,7 @@ def test_register_scope_defaults(cfg, scan_root, make_repo):
 
 
 def test_create_kb_in_repo_layout(cfg, core):
-    project = create_kb(cfg, "payroll", location=core)
+    project = create_kb(cfg, "payroll", location=core, in_repo=True)
     folder = core / "knowledge-base" / "payroll"
     assert project.path == folder and project.name == "core/payroll" and project.source == "registry"
     for rel in LAYOUT_FILES:
@@ -104,17 +105,17 @@ def test_create_kb_in_repo_layout(cfg, core):
 
 
 def test_second_topic_same_repo(cfg, core):
-    create_kb(cfg, "payroll", location=core)
-    create_kb(cfg, "rostering", location=core)
+    create_kb(cfg, "payroll", location=core, in_repo=True)
+    create_kb(cfg, "rostering", location=core, in_repo=True)
     register_kb(cfg, core / "knowledge-base" / "billing")
     assert sorted(discover_projects(GlobalConfig.load())[0]) == ["core/billing", "core/payroll", "core/rostering"]
 
 
 def test_create_kb_from_subfolder_and_worktree(cfg, core, tmp_path, make_worktree):
     (core / "src" / "deep").mkdir(parents=True)
-    assert create_kb(cfg, "one", location=core / "src" / "deep").path == core / "knowledge-base" / "one"
+    assert create_kb(cfg, "one", location=core / "src" / "deep", in_repo=True).path == core / "knowledge-base" / "one"
     wt = make_worktree(core, tmp_path / "core.worktrees" / "hi")
-    project = create_kb(cfg, "two", location=wt)
+    project = create_kb(cfg, "two", location=wt, in_repo=True)
     assert project.path == wt / "knowledge-base" / "two" and project.repo == core and project.name == "core/two"
     assert not (core / "knowledge-base" / "two").exists()
 
@@ -130,10 +131,10 @@ def test_create_kb_outside_repo_uses_marker_layout(cfg, scan_root):
 
 def test_create_kb_refuses_existing_and_bad_topic(cfg, core):
     with pytest.raises(ValueError, match="not empty"):
-        create_kb(cfg, "billing", location=core)
+        create_kb(cfg, "billing", location=core, in_repo=True)
     for bad in ("", ".hidden", "a/b", "..", "a\\b"):
         with pytest.raises(ValueError, match="topic"):
-            create_kb(cfg, bad, location=core)
+            create_kb(cfg, bad, location=core, in_repo=True)
     assert entries(cfg) == []
 
 
@@ -147,7 +148,7 @@ def test_create_kb_in_real_git_repo_stages_nothing(cfg, tmp_path):
     git("add", "-A")
     git("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "init")
     head = git("rev-parse", "HEAD")
-    create_kb(cfg, "billing", location=repo)
+    create_kb(cfg, "billing", location=repo, in_repo=True)
     register_kb(cfg, repo / "knowledge-base" / "billing")
     assert git("status", "--porcelain").split() == ["??", "knowledge-base/"]
     assert git("diff", "--cached", "--name-only") == "" and git("rev-parse", "HEAD") == head
@@ -192,7 +193,7 @@ def test_reregister_keeps_scope_and_name(cfg, tmp_path):
 
 def test_create_kb_from_worktree_under_hidden_folder(cfg, core, make_worktree):
     wt = make_worktree(core, core / ".claude" / "worktrees" / "feat")
-    project = create_kb(cfg, "rostering", location=wt)
+    project = create_kb(cfg, "rostering", location=wt, in_repo=True)
     assert project.name == "core/rostering" and project.path == wt / "knowledge-base" / "rostering"
     assert entries(cfg)[0]["rel"] == "knowledge-base/rostering" and entries(cfg)[0]["repo"] == str(core)
     assert register_kb(cfg, wt / "knowledge-base" / "rostering").name == "core/rostering"
@@ -231,14 +232,14 @@ def test_scan_reports_parent_of_registered_topics_as_covered(cfg, core):
 
 
 def test_create_kb_name_clash_writes_nothing(cfg, core, scan_root, make_repo):
-    create_kb(cfg, "billing2", location=core, name="taken")
+    create_kb(cfg, "billing2", location=core, name="taken", in_repo=True)
     other = make_repo(scan_root / "other" / "core")
     with pytest.raises(ValueError, match="already used"):
-        create_kb(cfg, "x", location=other, name="taken")
+        create_kb(cfg, "x", location=other, name="taken", in_repo=True)
     assert not (other / "knowledge-base").exists()
     for bad in (" ", "a\nb", "billing "):
         with pytest.raises(ValueError, match="topic"):
-            create_kb(cfg, bad, location=other)
+            create_kb(cfg, bad, location=other, in_repo=True)
 
 
 def test_register_same_folder_other_spelling_is_idempotent(cfg, core):
@@ -249,3 +250,104 @@ def test_register_same_folder_other_spelling_is_idempotent(cfg, core):
     register_kb(cfg, folder)
     again = register_kb(cfg, shouted)
     assert again.name == "core/billing" and len(entries(cfg)) == 1
+
+
+# ---- v0.4: a code base's knowledge base lives outside it by default; the choice is asked once
+
+def tree(folder):
+    return sorted(str(p.relative_to(folder)) for p in folder.rglob("*"))
+
+
+def test_create_kb_for_repo_is_standalone_by_default(cfg, core, scan_root):
+    before = tree(core)
+    project = create_kb(cfg, "payroll", location=core / "src")
+    folder = scan_root / "core" / "payroll"
+    assert project.path == folder and project.name == "core/payroll" and project.source == "marker"
+    assert project.repo is None and project.scope == "work"
+    assert (folder / ".kb.toml").is_file() and (folder / "knowledge-base" / "decisions.md").is_file()
+    assert tree(core) == before                                   # nothing written into the code base
+    assert prefs.linked(core) == [folder]
+    entry, state = (folder / "CLAUDE.md").read_text(), (folder / "STATE.md").read_text()
+    assert entry.startswith("# core/payroll\n") and "(project `core/payroll`)" in entry
+    assert f"- Code base: `{core}`" in entry and state.startswith("# STATE: core/payroll\n")
+    second = create_kb(cfg, "rostering", location=core)
+    assert second.path == scan_root / "core" / "rostering" and second.name == "core/rostering"
+    mine = repo_projects(discover_projects(GlobalConfig.load())[0], core / "src", cfg)
+    assert sorted(p.name for p in mine) == ["core/payroll", "core/rostering"]
+    with pytest.raises(ValueError, match="not empty"):
+        create_kb(cfg, "payroll", location=core)
+
+
+def test_create_kb_for_repo_scope_name_and_worktree(cfg, core, scan_root, tmp_path, make_repo, make_worktree):
+    garden = make_repo(scan_root / "personal" / "garden")
+    assert create_kb(cfg, "beds", location=garden).scope == "personal"      # follows the repo, not the folder
+    named = create_kb(cfg, "billing", location=core, name="Billing KB", scope="personal")
+    assert (named.name, named.scope) == ("Billing KB", "personal")
+    wt = make_worktree(core, tmp_path / "core.worktrees" / "hi")
+    project = create_kb(cfg, "two", location=wt)
+    assert project.path == scan_root / "core" / "two" and prefs.linked(core)[-1] == project.path
+    with pytest.raises(ValueError, match="already used"):
+        create_kb(cfg, "three", location=core, name="Billing KB")
+    assert not (scan_root / "core" / "three").exists()
+
+
+def test_create_kb_refuses_a_parent_inside_a_repo(cfg, scan_root, make_repo):
+    """`<new_project_parent>/<repo>` can be the repo itself (the default parent is the home folder)."""
+    repo = make_repo(scan_root / "myrepo", {"src/a.py": ""})
+    before = tree(repo)
+    with pytest.raises(ValueError, match="new_project_parent"):
+        create_kb(cfg, "billing", location=repo)
+    with pytest.raises(ValueError, match="new_project_parent"):
+        setup_project_kb(cfg, repo, True)
+    assert tree(repo) == before
+
+
+def test_hidden_repo_name_loses_its_dot(cfg, tmp_path, scan_root, make_repo):
+    repo = make_repo(tmp_path / "code" / ".kbhub")
+    project = create_kb(cfg, "general", location=repo)
+    assert project.path == scan_root / "kbhub" / "general" and project.name == "kbhub/general"
+    assert "kbhub/general" in discover_projects(GlobalConfig.load())[0]
+
+
+def test_setup_creates_first_knowledge_base(cfg, tmp_path, scan_root, make_repo):
+    repo = make_repo(tmp_path / "code" / "webapp", {"src/x.vue": ""})
+    before = tree(repo)
+    done = setup_project_kb(cfg, repo / "src", True)
+    project = done["projects"][0]
+    assert done["created"] and done["repo"] == repo
+    assert project.path == scan_root / "webapp" / "general" and project.name == "webapp/general"
+    assert prefs.get_choice(repo) == "on" and tree(repo) == before
+    again = setup_project_kb(cfg, repo, True)                       # second call: finds it, creates nothing
+    assert again["found"] and not again["created"] and [p.name for p in again["projects"]] == ["webapp/general"]
+    assert sorted(p.name for p in (scan_root / "webapp").iterdir()) == ["general"]
+
+
+def test_setup_reuses_standalone_kbs_by_name_and_folder(cfg, tmp_path, scan_root, make_repo, make_project):
+    repo = make_repo(tmp_path / "code" / "core")
+    make_project(scan_root / "core", "vendor-approvals", {"STATE.md": "# s\n"}, kb_toml='name = "core/vendor-approvals"\n')
+    make_project(scan_root / "core", "unnamed", {"STATE.md": "# s\n"})         # by folder only
+    make_project(scan_root, "elsewhere", {"STATE.md": "# s\n"}, kb_toml='name = "core/elsewhere"\n')   # by name only
+    make_project(scan_root, "corelike", {"STATE.md": "# s\n"})
+    done = setup_project_kb(cfg, repo, True)
+    assert done["found"] and not done["created"]
+    assert [p.name for p in done["projects"]] == ["core/elsewhere", "core/vendor-approvals", "unnamed"]
+
+
+def test_setup_registers_knowledge_found_in_the_repo(cfg, core, scan_root):
+    before = tree(core)
+    done = setup_project_kb(cfg, core / "src", True)
+    assert done["registered"] and not done["created"]
+    assert [p.name for p in done["projects"]] == ["core/billing"] and done["projects"][0].repo == core
+    assert tree(core) == before and not (scan_root / "core").exists()
+
+
+def test_setup_opt_out_and_back(cfg, tmp_path, scan_root, make_repo, make_worktree):
+    repo = make_repo(tmp_path / "code" / "webapp")
+    wt = make_worktree(repo, tmp_path / "webapp.worktrees" / "feat")
+    done = setup_project_kb(cfg, wt, False)                         # a worktree answers for its main clone
+    assert done["projects"] == [] and prefs.get_choice(repo) == "off" and not (scan_root / "webapp").exists()
+    assert setup_project_kb(cfg, repo, True)["created"] and prefs.get_choice(repo) == "on"
+    with pytest.raises(ValueError, match="not inside a git repository"):
+        setup_project_kb(cfg, tmp_path, True)
+    with pytest.raises(ValueError, match="scope"):
+        setup_project_kb(cfg, repo, True, scope="office")
