@@ -26,8 +26,9 @@ You do not need to read it top to bottom. Jump to the part you need:
 
 ## Where things live on your Mac
 
-kbhub keeps everything of its own in one folder, `~/.kbhub`, and adds a few small things to Claude
-Code so that Claude knows it is there.
+kbhub keeps the program, your settings and the index in one folder, `~/.kbhub`, your per-project
+answers in `~/.kbhub-config`, and adds a few small things to Claude Code so that Claude knows it is
+there.
 
 **kbhub's own folder**
 

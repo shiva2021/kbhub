@@ -325,8 +325,8 @@ def run_wizard(env: Env, ui: UI, wire_only: bool = False) -> int:
         ui.say(line)
 
     ui.say("\nYou're set." if ok else "\nSetup finished, with the items above still to fix.")
-    ui.say("  Next: open Claude Code in one of your projects and say:")
-    ui.say('        "create a knowledge base for <topic>"')
+    ui.say("  Next: open Claude Code in one of your projects.")
+    ui.say("        Claude asks once whether to keep a knowledge base for it.")
     ui.say("  Later: `kbhub doctor` checks the install, `kbhub update` gets the newest version,")
     ui.say("         `kbhub setup` runs this again, `kbhub uninstall` removes it.")
     return 0

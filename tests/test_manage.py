@@ -267,6 +267,9 @@ def test_create_kb_for_repo_is_standalone_by_default(cfg, core, scan_root):
     assert (folder / ".kb.toml").is_file() and (folder / "knowledge-base" / "decisions.md").is_file()
     assert tree(core) == before                                   # nothing written into the code base
     assert prefs.linked(core) == [folder]
+    entry, state = (folder / "CLAUDE.md").read_text(), (folder / "STATE.md").read_text()
+    assert entry.startswith("# core/payroll\n") and "(project `core/payroll`)" in entry
+    assert f"- Code base: `{core}`" in entry and state.startswith("# STATE: core/payroll\n")
     second = create_kb(cfg, "rostering", location=core)
     assert second.path == scan_root / "core" / "rostering" and second.name == "core/rostering"
     mine = repo_projects(discover_projects(GlobalConfig.load())[0], core / "src", cfg)

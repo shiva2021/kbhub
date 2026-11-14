@@ -22,8 +22,11 @@ The usual fix is a folder of notes. That helps, but then:
 
 - **Claude finds the right note by itself.** Ask "why do we round invoices this way?" and it
   searches the index and reads only the section that answers it.
-- **Notes live where they belong.** Inside a code project (`<project>/knowledge-base/<topic>/`,
-  saved together with the code) or in a standalone folder for research and planning.
+- **Claude asks once, then keeps notes for you.** The first time you work in a project it asks
+  whether to keep a knowledge base for it, and remembers your answer.
+- **Your projects stay untouched.** Notes about a project are kept in a folder of their own,
+  outside it. If you prefer, a topic's notes can live inside the project
+  (`<project>/knowledge-base/<topic>/`) and be saved together with the code.
 - **One place to search, wherever the notes are.** Every knowledge base on your Mac is in the same
   index, across all projects.
 - **Outdated notes are marked, not deleted.** Mark a note "superseded" and it stops showing up

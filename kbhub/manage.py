@@ -153,6 +153,21 @@ def _standalone_home(cfg: GlobalConfig, repo: Path) -> Path:
     return parent
 
 
+def _retitle(folder: Path, topic: str, name: str, repo: Path | None) -> None:
+    """The starter files are written for the folder name; make them carry the project name, and
+    say which code base the notes are about."""
+    swaps = [(f"# {topic}\n", f"# {name}\n"), (f"# STATE: {topic}\n", f"# STATE: {name}\n"),
+             (f"(project `{topic}`)", f"(project `{name}`)")]
+    if repo is not None:
+        swaps.append(("## Links\n", f"## Links\n- Code base: `{repo}` (these notes are kept outside it)\n"))
+    for rel in ("CLAUDE.md", "STATE.md"):
+        path = folder / rel
+        text = path.read_text(encoding="utf-8")
+        for old, new in swaps:
+            text = text.replace(old, new, 1)
+        path.write_text(text, encoding="utf-8")
+
+
 def create_kb(cfg: GlobalConfig, topic: str, location=None, name: str | None = None,
               scope: str | None = None, in_repo: bool = False) -> Project:
     """Create a new knowledge base. For a git repo: `<new_project_parent>/<repo>/<topic>/`, outside
@@ -187,6 +202,8 @@ def create_kb(cfg: GlobalConfig, topic: str, location=None, name: str | None = N
             final_scope = resolve_scope(cfg, project.path, pc.scope)
             project = Project(pc.name or project.name, project.path, pc, scope=final_scope,
                               fingerprint=f"{pc.fingerprint}:{final_scope}")
+        if name and name != topic:
+            _retitle(project.path, topic, name, repo)
         if repo is not None:
             prefs.link_kb(repo, project.path)
         return project
