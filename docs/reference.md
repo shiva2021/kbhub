@@ -7,7 +7,8 @@ You do not need to read it top to bottom. Jump to the part you need:
 
 - [The short version](#the-short-version)
 - [Where things live on your Mac](#where-things-live-on-your-mac)
-- [The two kinds of knowledge base](#the-two-kinds-of-knowledge-base)
+- [Asked once per project](#asked-once-per-project)
+- [Where the notes live](#where-the-notes-live)
 - [Work and personal notes](#work-and-personal-notes)
 - [Retiring old notes](#retiring-old-notes)
 - [Commands](#commands)
@@ -36,27 +37,64 @@ Code so that Claude knows it is there.
 | `~/.kbhub/config.toml` | Your settings. Setup writes this for you, and every setting is optional. |
 | `~/.kbhub/registry.json` | The list of knowledge bases that live inside your code projects. |
 | `~/.kbhub/db/` | The search index. You can delete it at any time; kbhub builds it again from your notes. |
+| `~/.kbhub-config/projects.json` | Your answer, per code project, to "keep a knowledge base for this project?", and which knowledge bases belong to it. |
 
 **What it adds elsewhere**
 
 | Path | What it is |
 | --- | --- |
 | `~/.claude/skills/kbhub` | A link to the skill that teaches Claude how to keep a knowledge base tidy. |
-| `~/.claude/settings.json` | One entry, so each Claude session is told at start-up which knowledge bases exist. |
+| `~/.claude/settings.json` | One entry, so each Claude session is told at start-up which knowledge bases exist, and whether to ask you about one. |
 | `~/.claude/CLAUDE.md` | One short block of text, between `<!-- kbhub:start -->` and `<!-- kbhub:end -->`. |
 | `~/.local/bin/kbhub` | The `kbhub` command you type in Terminal. |
 
 `kbhub uninstall` removes everything in the second table and leaves the first one alone.
 
-## The two kinds of knowledge base
+## Asked once per project
 
-Notes can sit inside a code project or in a folder of their own. Both work the same way in search;
-the difference is where the files live and how kbhub finds them.
+The first time a Claude session starts in a code project (a git repository) that has no knowledge
+base, Claude asks whether kbhub should keep one. Your answer is saved in
+`~/.kbhub-config/projects.json`, so you are asked once per project, not once per session. Git
+worktrees share the answer of the project they belong to.
 
-### Inside a code project
+- **Yes.** kbhub uses the knowledge base the project already has. If it has none, it adds any
+  knowledge-base folders it finds inside the project to the index. If there are none of those
+  either, it creates `<project>/general` in your knowledge-base folder (`new_project_parent` in
+  [Settings](#settings)) and indexes it.
+- **No.** Sessions in that project stop asking and stop offering.
+
+Change your answer with `kbhub kb on` or `kbhub kb off`, run inside the project. `kbhub kb status`
+shows the answer and the project's knowledge bases.
+
+A project counts as having a knowledge base when one is registered inside it, when one was created
+for it, when one is named `<project>` or `<project>/…`, or when one sits under
+`<knowledge-base folder>/<project>/`. Two projects with the same folder name share the last two
+rules. A project folder that starts with a dot loses it in the name (`.tools` becomes `tools`).
+
+You are never asked in a folder that is not a git repository.
+
+## Where the notes live
+
+Notes about a code project are kept outside it unless you ask otherwise. Notes that belong to no
+project sit in a folder of their own. All of them work the same way in search; the difference is
+where the files live and how kbhub finds them.
+
+### For a code project, outside it (the default)
 
 Use this when the notes are about the code: why billing rounds the way it does, how to run a
 release, what was tried and dropped.
+
+- The notes go in `<knowledge-base folder>/<project>/<topic>/`, one folder per topic. For
+  example `~/knowledge-bases/shop/billing/`.
+- The name is `<project>/<topic>`, for example `shop/billing`.
+- Nothing is written into the project, so there is nothing to commit and nothing for code review
+  to see.
+- It has the standalone layout described [below](#standalone).
+
+### Inside a code project
+
+Use this when you want the notes saved with the code. Ask Claude for a knowledge base "inside this
+repo", or run `kbhub new-kb <topic> --in-repo`.
 
 - The notes go in `<project>/knowledge-base/<topic>/`, one folder per topic.
 - They are saved with the code, so they travel with it and show up in code review.
@@ -173,7 +211,9 @@ Options for `search`:
 
 | Command | What it does |
 | --- | --- |
-| `kbhub new-kb TOPIC [--in DIR]` | Start a knowledge base. Inside a project it becomes `knowledge-base/TOPIC/`. |
+| `kbhub new-kb TOPIC [--in DIR]` | Start a knowledge base. For a project it becomes `<knowledge-base folder>/<project>/TOPIC/`, outside the project. |
+| `kbhub new-kb TOPIC --in-repo` | Start it inside the project instead, as `knowledge-base/TOPIC/`. |
+| `kbhub kb on\|off\|status [PATH]` | Say whether a project gets a knowledge base, so sessions stop asking. `on` finds or creates one. |
 | `kbhub new-project NAME [--parent DIR]` | Start a standalone knowledge base. |
 | `kbhub scan [ROOT]` | Look for knowledge-base folders that are not indexed yet. It only reports; it changes nothing. |
 | `kbhub register PATH [--name N] [--scope S]` | Add an existing folder of notes to the index. |
@@ -219,7 +259,8 @@ session. You never run it yourself.
 | `get_section` | Read one section in full. |
 | `list_projects` | See which knowledge bases exist. |
 | `list_sources` | See which files are indexed. |
-| `create_kb` | Start a new knowledge base. |
+| `kb_setup` | Save your answer to "keep a knowledge base for this project?" and, on yes, find or create one. |
+| `create_kb` | Start a new knowledge base for another topic. |
 | `scan_kbs` | Look for folders of notes that are not indexed yet. |
 | `register_kb` | Add one of those folders to the index. |
 | `add_rule` | Mark files as superseded or background. |
@@ -239,7 +280,7 @@ These are the ones people actually change:
 | --- | --- |
 | `kb_scan_roots` | The folders `kbhub scan` looks through for knowledge-base folders inside projects. |
 | `scan_roots` | The folders kbhub looks through for standalone knowledge bases. It goes three levels down (`scan_depth`). |
-| `new_project_parent` | Where new standalone knowledge bases are created. |
+| `new_project_parent` | Your knowledge-base folder: where new knowledge bases are created, in `<project>/<topic>` folders for code projects. It must be outside every git repository. |
 | `personal_roots` | Folders whose knowledge bases count as personal. |
 | `[embedding] backend` | `"ollama"` for the best search, or `"wordllama"` for the built-in model that needs nothing installed. |
 

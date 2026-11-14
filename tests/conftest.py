@@ -17,6 +17,7 @@ def kb_home(tmp_path, monkeypatch, scan_root) -> Path:
     home = tmp_path / "kbhome"
     home.mkdir()
     monkeypatch.setenv("KBHUB_HOME", str(home))
+    monkeypatch.setenv("KBHUB_CONFIG_HOME", str(tmp_path / "kbconfig"))   # never the real ~/.kbhub-config
     (home / "config.toml").write_text(
         f"scan_roots = [{json.dumps(str(scan_root))}]\n"
         "exclude_dirs = []\n"
@@ -144,6 +145,7 @@ def machine(tmp_path, monkeypatch):
     (home / "Developer").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("KBHUB_HOME", str(home / ".kbhub"))
+    monkeypatch.setenv("KBHUB_CONFIG_HOME", str(home / ".kbhub-config"))
 
     from kbhub import setup as _su
 

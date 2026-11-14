@@ -35,8 +35,8 @@ def test_server_end_to_end(kb_home, scan_root, make_project):
         assert "search_kb" in init.instructions and "superseded" in init.instructions
         tools = await session.list_tools()
         assert sorted(t.name for t in tools.tools) == [
-            "add_rule", "create_kb", "get_section", "list_projects", "list_sources", "register_kb", "reindex",
-            "scan_kbs", "search_kb"]
+            "add_rule", "create_kb", "get_section", "kb_setup", "list_projects", "list_sources", "register_kb",
+            "reindex", "scan_kbs", "search_kb"]
 
         found = text_of(await session.call_tool("search_kb", {"query": "channel id format"}))
         assert "[1] Alpha · knowledge-base/decisions.md:3-4 | decisions | current" in found
@@ -80,6 +80,7 @@ def test_server_reports_bad_config_as_text(kb_home, scan_root, make_project):
 
 def test_server_creates_registers_and_scopes(kb_home, scan_root, make_project, make_repo):
     core = make_repo(scan_root / "projects" / "core", {"src/app.ts": "", "docs/kb/legacy.md": "## Legacy\nold platypus notes\n"})
+    webapp = make_repo(scan_root / "projects" / "webapp", {"src/x.vue": ""})
     make_project(scan_root / "personal", "Diary", {"n.md": "## Secret\nprivate quokka diary\n"})
     make_project(scan_root, "Work", {"n.md": "## Plan\nwork quokka plan\n"})
 
@@ -88,7 +89,19 @@ def test_server_creates_registers_and_scopes(kb_home, scan_root, make_project, m
         assert "where the session started" in init.instructions
         call = lambda tool, /, **args: session.call_tool(tool, args)
 
-        created = text_of(await call("create_kb", topic="billing"))      # location defaults to the session folder
+        assert "kb_setup" in init.instructions and "in_repo" in init.instructions
+        asked = text_of(await call("kb_setup", enable=True, location=str(webapp)))   # the user said yes
+        general = scan_root / "webapp" / "general"
+        assert "Created" in asked and "webapp/general" in asked and str(general) in asked and "Indexed" in asked
+        assert (general / "STATE.md").is_file() and sorted(p.name for p in webapp.iterdir()) == [".git", "src"]
+        again = text_of(await call("kb_setup", enable=True, location=str(webapp)))
+        assert "already has" in again and "webapp/general" in again and "Created" not in again
+        assert "no knowledge base for webapp" in text_of(await call("kb_setup", enable=False, location=str(webapp)))
+        outside = text_of(await call("create_kb", topic="payroll"))      # a topic for the session's repo: outside it
+        assert "core/payroll" in outside and str(scan_root / "core" / "payroll") in outside
+        assert "not committed" not in outside and not (core / "knowledge-base").exists()
+
+        created = text_of(await call("create_kb", topic="billing", in_repo=True))   # only when asked for
         folder = core / "knowledge-base" / "billing"
         assert "core/billing" in created and str(folder) in created and "not committed" in created
         assert (folder / "STATE.md").is_file() and not list(core.rglob(".kb.toml"))

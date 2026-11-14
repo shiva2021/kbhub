@@ -16,6 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import prefs
+
 REPO = Path(__file__).resolve().parent.parent      # the engine repo (code, skill, hook)
 SKILL_NAME = "kbhub"
 MCP_NAME = "kbhub"
@@ -311,6 +313,7 @@ def uninstall(claude_home: Path, kb_home: Path, run_claude: bool = True, bin_dir
         code, out = (run or _run)([claude, "mcp", "remove", MCP_NAME, "--scope", "user"])
         log.append(f"mcp: removed server {MCP_NAME}" if code == 0 else f"mcp: nothing removed ({out})")
     log.append(f"kept: your settings, registry and index in {kb_home} (delete that folder to remove everything)")
+    log.append(f"kept: your per-project answers in {prefs.prefs_home()}")
     return log
 
 

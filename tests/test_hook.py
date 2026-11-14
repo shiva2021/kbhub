@@ -88,10 +88,16 @@ def test_hook_never_fails(hook, projects, kb_home, monkeypatch, capsys):
 def test_hook_writes_nothing(hook, projects, kb_home, scan_root, monkeypatch, capsys):
     def snapshot():
         return {str(p): p.stat().st_mtime_ns for root in (kb_home, scan_root) for p in sorted(root.rglob("*"))}
+    repo = scan_root / "code" / "webapp"
+    (repo / ".git").mkdir(parents=True)
     before = snapshot()
     run_main(hook, monkeypatch, capsys, json.dumps({"cwd": str(projects[0])}))
     run_main(hook, monkeypatch, capsys, json.dumps({"cwd": "/"}))
+    code, out = run_main(hook, monkeypatch, capsys, json.dumps({"cwd": str(repo)}))   # the "ask once" case
+    assert "ACTION NEEDED" in out
     assert snapshot() == before
+    from kbhub import prefs
+    assert not prefs.prefs_home().exists()                 # reading the choice creates nothing
 
 
 def _run_hook(cwd, extra=()):
@@ -166,11 +172,53 @@ def test_unregistered_folder_hint(hook, world, kb_home, write_registry):
     assert "not registered" not in ctx and "- webapp" in ctx
 
 
-def test_repo_without_kb_mentions_create_kb(hook, world):
+def test_repo_without_kb_asks_once(hook, world):
     ctx = hook.build_context(world["webapp"] / "src", GlobalConfig.load())
-    assert "no knowledge base yet" in ctx and "create_kb" in ctx and "- Atlas" in ctx
-    assert "offer" in ctx and "do not create one unasked" in ctx
-    assert "not registered" not in ctx
+    assert "ACTION NEEDED" in ctx and "(webapp)" in ctx and "has not been asked yet" in ctx
+    assert "kb_setup(enable=true)" in ctx and "kb_setup(enable=false)" in ctx and "AskUserQuestion" in ctx
+    assert "nothing is written into the code base" in ctx and "non-interactive" in ctx
+    assert "- Atlas" in ctx and "not registered" not in ctx
+    assert "offer to create one" not in ctx                 # the old soft hint is gone everywhere
+    assert "ACTION NEEDED" not in hook.build_context(world["core"] / "src", GlobalConfig.load())
+    assert "ACTION NEEDED" not in hook.build_context(world["scan"], GlobalConfig.load())   # not a repo: never asked
+
+
+def test_repo_opted_out_is_left_alone(hook, world):
+    from kbhub import prefs
+    prefs.set_choice(world["webapp"], False)
+    ctx = hook.build_context(world["webapp"] / "src", GlobalConfig.load())
+    assert "chose not to keep a knowledge base" in ctx and "Do not offer or create one" in ctx
+    assert "ACTION NEEDED" not in ctx and "- Atlas" in ctx and "search_kb" in ctx
+
+
+def test_repo_opted_in_without_kb_is_told_to_set_up(hook, world):
+    from kbhub import prefs
+    prefs.set_choice(world["webapp"], True)
+    ctx = hook.build_context(world["webapp"] / "src", GlobalConfig.load())
+    assert "wants a knowledge base" in ctx and "kb_setup(enable=true)" in ctx and "ACTION NEEDED" not in ctx
+
+
+def test_standalone_kbs_count_as_the_repos_own(hook, world, make_project, make_worktree, tmp_path):
+    """A knowledge base outside the repo belongs to it by name (`webapp/...`) or by folder."""
+    scan = world["scan"]
+    make_project(scan / "webapp", "general", {"STATE.md": "# STATE\n\nWebapp general state.\n"},
+                 kb_toml='name = "webapp/general"\n')
+    make_project(scan / "webapp", "loose", {"STATE.md": "# STATE\n\nLoose notes.\n"})
+    ctx = hook.build_context(world["webapp"] / "src", GlobalConfig.load())
+    assert "ACTION NEEDED" not in ctx and "no knowledge base" not in ctx
+    mine, others = ctx.index("- webapp/general"), ctx.index("Other work knowledge bases")
+    assert ctx.index("this code base (webapp)") < mine < others and ctx.index("- loose") < others
+    assert "Webapp general state." in ctx and ctx.count("- webapp/general") == 1
+    assert ctx.index("- Atlas") > others and ctx.index("- core/billing") > others
+    wt = make_worktree(world["webapp"], tmp_path / "webapp.worktrees" / "feat")
+    assert "- webapp/general" in hook.build_context(wt, GlobalConfig.load()).split("Other work")[0]
+
+
+def test_asking_survives_a_broken_choice_file(hook, world):
+    from kbhub import prefs
+    prefs.prefs_path().parent.mkdir(parents=True, exist_ok=True)
+    prefs.prefs_path().write_text("{ not json")
+    assert "ACTION NEEDED" in hook.build_context(world["webapp"], GlobalConfig.load())
 
 
 def test_scope_line_and_personal_hidden_from_work_session(hook, world):

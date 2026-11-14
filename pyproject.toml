@@ -1,6 +1,6 @@
 [project]
 name = "kbhub"
-version = "0.3.0"
+version = "0.4.0"
 description = "Central local LanceDB index of project knowledge-base folders (decisions, research, handovers), exposed to agents via MCP"
 requires-python = ">=3.11"
 dependencies = [

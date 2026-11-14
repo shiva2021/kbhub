@@ -25,8 +25,9 @@ SESSION_DIR = Path(os.environ.get("KBHUB_SESSION_DIR") or os.getcwd())
 
 INSTRUCTIONS = """\
 Central index of every knowledge base on this machine: folders of markdown (decisions, lessons,
-plans, runbooks, research, handovers) that live inside code repos (<repo>/knowledge-base/<topic>/),
-next to them, or in personal projects. Use it INSTEAD of opening knowledge files to look for things.
+plans, runbooks, research, handovers) kept for code bases (outside them by default, or inside at
+<repo>/knowledge-base/<topic>/) and for personal projects. Use it INSTEAD of opening knowledge files
+to look for things.
 
 Finding knowledge:
 - Before opening knowledge files, call search_kb with a specific question or exact identifiers
@@ -38,11 +39,16 @@ Finding knowledge:
 - Never act on superseded results. They are hidden by default; include_superseded=true is for history.
 
 Creating and updating knowledge:
-- Working in a code base that has no knowledge base for the topic at hand? Offer to create one with
-  create_kb(topic). In a git repo it creates <repo>/knowledge-base/<topic>/ and registers it; one
-  topic per functionality. It only writes files: nothing is staged or committed. It targets the
-  folder where the session started: if you have moved to another repo or into a git worktree since,
-  pass location=<the folder you are working in>.
+- A code base with no knowledge base: when the session start says the user has not been asked yet,
+  ask them once, then call kb_setup(enable=true|false). Yes finds the existing knowledge base or
+  creates and indexes <knowledge-base folder>/<repo>/general, outside the repo. The answer is
+  remembered; never ask again, and never offer one to a user who said no.
+- Another topic for a code base that has one: create_kb(topic), one topic per functionality. It
+  creates <knowledge-base folder>/<repo>/<topic>, outside the repo, so nothing is written into the
+  code base. Only when the user asks for the knowledge to live in the repo, pass in_repo=true:
+  that creates <repo>/knowledge-base/<topic>/ and stages or commits nothing.
+- kb_setup and create_kb target the folder where the session started: if you have moved to another
+  repo or into a git worktree since, pass location=<the folder you are working in>.
 - Knowledge-base folders that exist but are not indexed (the session start mentions them, or the user
   asks you to look): scan_kbs lists them, register_kb adds them.
 - Write knowledge as markdown files in the knowledge base (decisions, lessons, STATE.md, handovers),
@@ -204,11 +210,12 @@ def register_kb(path: str, name: str | None = None, scope: str | None = None) ->
 
 
 @_tool
-def create_kb(topic: str, location: str | None = None, name: str | None = None, scope: str | None = None) -> str:
-    """Create a new knowledge base and index it. Inside a git repo it is created at
-    <repo>/knowledge-base/<topic>/ (README.md, STATE.md, decisions.md, lessons.md, open-items.md,
-    runbooks/, research/, plans/, handovers/) and named "<repo>/<topic>"; use one topic per
-    functionality. Outside a repo it creates a standalone knowledge-base project.
+def create_kb(topic: str, location: str | None = None, name: str | None = None, scope: str | None = None,
+              in_repo: bool = False) -> str:
+    """Create a new knowledge base and index it. For a git repo it is created outside the repo, at
+    <knowledge-base folder>/<repo>/<topic>/ (CLAUDE.md, STATE.md, knowledge-base/, plans/,
+    handovers/), named "<repo>/<topic>"; use one topic per functionality. Nothing is written into
+    the code base. Outside a repo it creates a standalone knowledge-base project in that folder.
 
     Args:
         topic: folder name for the knowledge base, e.g. "billing".
@@ -216,13 +223,54 @@ def create_kb(topic: str, location: str | None = None, name: str | None = None, 
             you are working somewhere else now (another repo, or a git worktree created later).
         name: project name to use instead of "<repo>/<topic>".
         scope: "work" or "personal" (default: by location).
+        in_repo: true only when the user asks for the knowledge to live in the code base: creates
+            <repo>/knowledge-base/<topic>/ (README.md, STATE.md, decisions.md, lessons.md,
+            open-items.md, runbooks/, research/, plans/, handovers/), to be committed with the code.
     """
     idx = _fresh()
-    project = manage.create_kb(idx.cfg, topic, location or SESSION_DIR, name, scope)
+    project = manage.create_kb(idx.cfg, topic, location or SESSION_DIR, name, scope, in_repo)
     committed = ("The files are new in the working tree and not committed: commit them with the change they "
                  "describe, on a branch, following the repo's rules." if project.repo else "")
     return (f"Created {project.name} [{project.scope}] at {project.path}. {_indexed_summary(idx, project.name)} "
             f"{committed}").strip()
+
+
+@_tool
+def kb_setup(enable: bool, location: str | None = None, scope: str | None = None) -> str:
+    """Record the user's answer to "should kbhub keep a knowledge base for this code base?" and act
+    on it. Call it once, after asking the user, when the session start says they have not been
+    asked yet; call it again only when they change their mind.
+
+    enable=true: uses the knowledge base the code base already has; else registers knowledge-base
+    folders found in the repo; else creates <knowledge-base folder>/<repo>/general outside the repo
+    and indexes it. Nothing is written into the code base.
+    enable=false: remembers the no, so no session asks or offers again.
+
+    Args:
+        enable: the user's answer.
+        location: the code base it is for. Default: the folder where the session started.
+        scope: "work" or "personal" for a new knowledge base (default: by the repo's location).
+    """
+    idx = _fresh()
+    done = manage.setup_project_kb(idx.cfg, location or SESSION_DIR, enable, scope)
+    repo = done["repo"].name
+    if not enable:
+        return (f"Recorded: no knowledge base for {repo}. No session will ask or offer again. "
+                "kb_setup(enable=true) switches it on later.")
+    lines = [f"- {p.name} [{p.scope}] at {p.path}" for p in done["projects"]]
+    if done["created"]:
+        head = f"Recorded: yes. Created a knowledge base for {repo}, outside the repo:"
+        tail = (f"{_indexed_summary(idx, done['projects'][0].name)} Read its CLAUDE.md and STATE.md, fill in what "
+                "this session learns, and keep STATE.md current. Another topic gets its own: create_kb(topic).")
+    elif done["registered"]:
+        _indexed_summary(idx, done["projects"][0].name)
+        head = f"Recorded: yes. {repo} already has knowledge, now indexed:"
+        tail = "Search it with search_kb. Tell the user which folders were picked up."
+    else:
+        head = f"Recorded: yes. {repo} already has knowledge bases:"
+        tail = "Search them with search_kb; nothing was created."
+    skipped = "".join(f"\nNot registered: {s}" for s in done["skipped"])
+    return "\n".join([head, *lines, tail]) + skipped
 
 
 @_tool

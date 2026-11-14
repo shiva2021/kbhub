@@ -181,7 +181,7 @@ def _write_config(env: Env, ui: UI, backend: str, ask: bool) -> None:
     if ask:
         work = _folder(env, ui, "Where do your projects (code, research) live?", default_work) or default_work
         personal = _folder(env, ui, "Folder of personal projects, kept apart from work (Enter for none)?", None)
-        notes = _folder(env, ui, "Where should knowledge bases that belong to no code project go?",
+        notes = _folder(env, ui, "Where should your knowledge bases go (your notes are kept here, outside your projects)?",
                         notes_default, must_exist=False) or notes_default
     roots = [str(p) for p in dict.fromkeys(p for p in (work, personal) if p)]
     lines = [
@@ -194,7 +194,7 @@ def _write_config(env: Env, ui: UI, backend: str, ask: bool) -> None:
         "# Where it looks for standalone knowledge bases (folders with a .kb.toml).",
         f"scan_roots = {json.dumps(list(dict.fromkeys(roots + [str(notes)])))}",
         "",
-        "# Where new standalone knowledge bases are created.",
+        "# Where new knowledge bases are created: <project>/<topic> for a code project.",
         f"new_project_parent = {json.dumps(str(notes))}",
         "",
         "# Knowledge bases under these folders are personal; everything else is work.",

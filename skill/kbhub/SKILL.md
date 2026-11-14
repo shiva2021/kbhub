@@ -8,8 +8,11 @@ description: Use for any project, coding or research task. Finds project knowled
 Project knowledge (decisions, lessons, plans, runbooks, research, handovers) lives as markdown in
 knowledge bases and is indexed centrally by `kbhub`, wherever the files are:
 
-- **inside a code base**: `<repo>/knowledge-base/<topic>/`, committed with the code, one topic per
-  functionality (e.g. `core/knowledge-base/billing/` is project `core/billing`);
+- **for a code base, outside it** (the default): `<knowledge-base folder>/<repo>/<topic>/`, one topic
+  per functionality (e.g. `~/knowledge-bases/core/billing/` is project `core/billing`). Nothing is
+  written into the repo;
+- **inside a code base**, only when the user asks: `<repo>/knowledge-base/<topic>/`, committed with
+  the code;
 - **standalone**: a folder outside any repo, marked with a `.kb.toml` (e.g. `~/notes/atlas`);
 - **personal projects** (folders listed as `personal_roots` in the config), kept apart from work knowledge by scope.
 
@@ -44,22 +47,39 @@ else). By default a search covers only the scope of the folder the session works
 notes stay out of work results and the reverse. Scope is a default filter, not a lock: naming a
 `project`, or passing `scope="all"` (`--scope all` on the command line), reaches across.
 
-## Knowledge bases inside a code base
+## A code base with no knowledge base: ask once
 
-When the work is in a git repo and there is no knowledge base for the topic at hand, offer to create
-one, then:
+The session start tells you which case you are in. Follow it exactly:
 
-- Call `create_kb(topic)` (command line: `kbhub new-kb <topic>` from inside the repo). It creates
+- **"ACTION NEEDED … has not been asked yet"**: before anything else in your first reply, ask the
+  user once whether kbhub should keep a knowledge base for this code base (Yes / No; use the
+  AskUserQuestion tool if you have it). Then call `kb_setup(enable=true)` or
+  `kb_setup(enable=false)` and carry on with their request. Do not skip it because the task looks
+  small. If you cannot ask (a non-interactive run) or they do not answer, do not call `kb_setup`.
+- **Yes** (`kb_setup(enable=true)`): it uses the knowledge base the code base already has; else it
+  registers knowledge-base folders found in the repo; else it creates
+  `<knowledge-base folder>/<repo>/general/` outside the repo and indexes it. Read the new
+  `CLAUDE.md` and `STATE.md`, then record what the session learns.
+- **No** (`kb_setup(enable=false)`): the answer is remembered. Do not ask again and do not offer a
+  knowledge base in that code base unless the user brings it up.
+- The answer is stored per code base in `~/.kbhub-config/projects.json`, outside every repo. The
+  user can change it with `kbhub kb on` / `kbhub kb off` (`kbhub kb status` shows it).
+
+## Knowledge bases for a code base
+
+- A different functionality gets its own topic: call `create_kb(topic)` (command line:
+  `kbhub new-kb <topic>` from inside the repo), e.g. `create_kb("payroll")` next to `billing`. It
+  creates `<knowledge-base folder>/<repo>/<topic>/` outside the repo, names it `<repo>/<topic>`
+  and indexes it at once. Do not pile unrelated areas into one knowledge base.
+- **Nothing is written into the code base** unless the user asks for the knowledge to live there.
+  Only then pass `in_repo=true` (`kbhub new-kb <topic> --in-repo`): it creates
   `<repo>/knowledge-base/<topic>/` with `README.md`, `STATE.md`, `decisions.md`, `lessons.md`,
-  `open-items.md`, `runbooks/`, `research/`, `plans/`, `handovers/`, registers it as
-  `<repo>/<topic>` and indexes it at once.
-- The tool creates it for the folder **where the session started**. If you have since moved to
-  another repo or into a git worktree, pass `location=<that folder>` so the files land in the
-  checkout you are actually working in.
-- A different functionality in the same code base gets its own topic: `create_kb("payroll")` next to
-  `billing`. Do not pile unrelated areas into one knowledge base.
-- The tool **never commits**: it only writes files. Commit the knowledge files with the code change
-  they describe. If you are on `main`/`master`, branch first; follow the repo's normal rules.
+  `open-items.md`, `runbooks/`, `research/`, `plans/`, `handovers/`.
+- The tools work for the folder **where the session started**. If you have since moved to
+  another repo or into a git worktree, pass `location=<that folder>`.
+- For an in-repo knowledge base the tool **never commits**: it only writes files. Commit the
+  knowledge files with the code change they describe. If you are on `main`/`master`, branch first;
+  follow the repo's normal rules.
 - Knowledge written on a feature branch or in a git worktree is searchable straight away: a session
   always reads and writes the copy in its own checkout.
 - **Never create a `.kb.toml` inside a git repo.** In-repo knowledge bases are recorded in the central
