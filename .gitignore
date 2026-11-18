@@ -9,3 +9,4 @@ registry.json
 registry.lock
 registry.json.tmp
 dist/
+record.lock

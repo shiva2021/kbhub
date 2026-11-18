@@ -35,8 +35,8 @@ def test_server_end_to_end(kb_home, scan_root, make_project):
         assert "search_kb" in init.instructions and "superseded" in init.instructions
         tools = await session.list_tools()
         assert sorted(t.name for t in tools.tools) == [
-            "add_rule", "create_kb", "get_section", "kb_setup", "list_projects", "list_sources", "register_kb",
-            "reindex", "scan_kbs", "search_kb"]
+            "add_rule", "create_kb", "get_section", "kb_setup", "list_projects", "list_sources", "record",
+            "register_kb", "reindex", "scan_kbs", "search_kb"]
 
         found = text_of(await session.call_tool("search_kb", {"query": "channel id format"}))
         assert "[1] Alpha · knowledge-base/decisions.md:3-4 | decisions | current" in found
@@ -61,6 +61,41 @@ def test_server_end_to_end(kb_home, scan_root, make_project):
         assert "late.md" in text_of(await session.call_tool("search_kb", {"query": "platypus", "limit": 99}))
         rebuilt = text_of(await session.call_tool("reindex", {"project": "Alpha"}))
         assert '"changed": 3' in rebuilt
+        return True
+
+    assert asyncio.run(_session(kb_home, body))
+
+
+def test_server_records_entries(kb_home, scan_root, make_project):
+    from datetime import date
+    today = date.today().isoformat()
+    project = make_project(scan_root, "Alpha", FILES)
+    make_project(scan_root, "Alpha/sub", {"n.md": "x"}, kb_toml='name = "Alpha/sub"\n')
+
+    async def body(session, init):
+        assert "record(" in init.instructions
+        call = lambda **args: session.call_tool("record", args)
+        done = text_of(await call(project="alpha", kind="decision", title="Echidna ids", body="Channels use echidna ids.",
+                                  why="The old shape clashed.", decided_by="Sam", supersedes="D-001"))
+        assert done.startswith("Recorded D-002 in Alpha · knowledge-base/decisions.md:6-10.")
+        assert "D-001 is now marked superseded" in done and "STATE.md" in done and "Searchable now" in done
+        text = (project / "knowledge-base" / "decisions.md").read_text()
+        assert f"## D-001: Channel ids (superseded {today}, see D-002)" in text
+        assert f"- **Date:** {today} · **Status:** accepted · **Decided by:** Sam" in text
+        found = text_of(await session.call_tool("search_kb", {"query": "echidna channel ids", "project": "Alpha"}))
+        assert "knowledge-base/decisions.md:6-10 | decisions | current" in found
+        assert "decisions.md:3-4" not in found          # the superseded decision is hidden at once
+
+        lesson = text_of(await call(project="Alpha", kind="lesson", title="Numbats bite", body="Wear gloves."))
+        assert lesson.startswith("Recorded the lesson in Alpha · knowledge-base/lessons.md:3-4.")
+        handover = text_of(await call(project="Alpha", kind="handover", title="Importer", body="## Next\nWrite rows."))
+        assert f"handovers/{today}-importer.md" in handover and "Link it from STATE.md" in handover
+        assert "numbats" in text_of(await session.call_tool("search_kb", {"query": "numbats gloves"})).lower()
+
+        for bad in ({"project": "nope"}, {"kind": "note"}, {"title": "Dropped it"}, {"why": None}):
+            args = {"project": "Alpha", "kind": "decision", "title": "T", "body": "b", "why": "w", **bad}
+            assert text_of(await call(**args)).startswith("Error:"), bad
+        assert "D-003" not in (project / "knowledge-base" / "decisions.md").read_text()
         return True
 
     assert asyncio.run(_session(kb_home, body))
@@ -146,3 +181,22 @@ def test_server_default_scope_follows_personal_session_folder(kb_home, scan_root
         return True
 
     assert asyncio.run(_session(kb_home, body, cwd=diary))
+
+
+def test_record_reports_success_when_the_sync_fails(kb_home, scan_root, make_project, monkeypatch):
+    """The entry is on disk by then: an error would make the caller record it a second time."""
+    from kbhub import server
+    from kbhub.index import KBIndex
+    project = make_project(scan_root, "Alpha", FILES)
+    idx = KBIndex(session_dir=scan_root)
+    monkeypatch.setattr(server, "_index", idx)
+    monkeypatch.setattr(idx, "maybe_sync", lambda **kw: None)
+
+    def broken(*a, **kw):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(idx, "sync", broken)
+    out = server.record("Alpha", "lesson", "Numbats bite", "Wear gloves.")
+    assert out.startswith("Recorded the lesson in Alpha · knowledge-base/lessons.md:")
+    assert "after the next sync" in out and "disk full" in out and idx._last_sync == 0.0
+    assert (project / "knowledge-base" / "lessons.md").read_text().count("Numbats bite") == 1

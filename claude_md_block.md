@@ -16,6 +16,7 @@ asked), all indexed by the `kbhub` MCP server.
 - A new topic gets its own knowledge base: `create_kb(topic)`, created outside the repo. Write into
   the repo (`in_repo=true`) only when the user asks. Never create a `.kb.toml` inside a git repo.
 - If a knowledge-base folder exists but is not registered, use `scan_kbs` then `register_kb`.
-- Record decisions, lessons and handovers as markdown in the knowledge base and keep its `STATE.md`
-  current, following the `kbhub` skill.
+- Add decisions, lessons and handovers with `record(project, kind, title, body)`; write other
+  knowledge as markdown in the knowledge base. Keep its `STATE.md` current, following the `kbhub`
+  skill.
 <!-- kbhub:end -->

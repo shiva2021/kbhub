@@ -110,7 +110,10 @@ For work that is not tied to one code base:
 
 ## Recording decisions
 
-Add to the knowledge base's `decisions.md`, newest last, numbered `D-NNN`:
+Call `record(project, kind="decision", title, body, why, decided_by)`. It appends the next
+`D-NNN` to the knowledge base's `decisions.md` with today's date, without you reading the file
+first, and adds the id to **Active decisions** in `STATE.md`. Leave the id and the date out of the
+title. The entry it writes (the same format to use if you ever edit the file by hand):
 
 ```markdown
 ## D-012: Site chats stay on client channels
@@ -119,11 +122,16 @@ Add to the knowledge base's `decisions.md`, newest last, numbered `D-NNN`:
 - **Why:** the reason, and the options that were rejected.
 ```
 
-To reverse a decision, never delete or rewrite it. Mark the old heading
-`(superseded YYYY-MM-DD, see D-NNN)` and add the new decision below with a link back. The marker in
-the heading is what hides the old decision from search.
+To reverse a decision, never delete or rewrite it: record the new one with `supersedes="D-NNN"`.
+That marks the old heading `(superseded YYYY-MM-DD, see D-NNN)`, links the new decision back to
+it and drops the old id from `STATE.md`. The marker in the heading is what hides the old decision
+from search, so a title must not contain `superseded`, `dropped`, `deprecated` or the like.
 
-Record gotchas and failed approaches in `lessons.md`, and unanswered questions in `open-items.md`.
+Record gotchas and failed approaches with `record(project, kind="lesson", title, body)`, which
+appends a dated heading to `lessons.md`. Unanswered questions go in `open-items.md`, by hand.
+
+`record` only appends. To correct an existing entry, or when `record` says it left `STATE.md`
+alone because its **Active decisions** section is hand-written, edit the markdown.
 
 ## STATE.md
 
@@ -134,8 +142,9 @@ base instead of letting it grow.
 
 ## Handovers
 
-When work stops mid-stream or changes hands, write `handovers/YYYY-MM-DD-<topic>.md`: what was done,
-what is in flight, how to verify it, and the exact next step. Link it from `STATE.md`.
+When work stops mid-stream or changes hands, call `record(project, kind="handover", title, body)`
+with what was done, what is in flight, how to verify it, and the exact next step. It writes
+`handovers/YYYY-MM-DD-<title>.md`. Link it from `STATE.md`.
 
 ## Marking material superseded
 

@@ -250,7 +250,8 @@ For scripts: `kbhub doctor` exits with code 1 when something required is missing
 
 ## What Claude can do
 
-Claude Code gets its own set of tools, which do the same jobs as the commands above. They come
+Claude Code gets its own set of tools, which do the same jobs as the commands above (`record` is the
+one with no command). They come
 from a small local program (`kbhub-server`, an MCP server) that Claude Code starts with each
 session. You never run it yourself.
 
@@ -265,10 +266,13 @@ session. You never run it yourself.
 | `scan_kbs` | Look for folders of notes that are not indexed yet. |
 | `register_kb` | Add one of those folders to the index. |
 | `add_rule` | Mark files as superseded or background. |
+| `record` | Add a decision, lesson or handover in the standard format. |
 | `reindex` | Refresh the index. |
 
-There is no "save" tool on purpose. Claude writes notes as ordinary files, and the index picks
-them up by itself.
+`record` only adds a new entry: it numbers and dates a decision, marks the decision it replaces
+as superseded, and keeps the list of decisions in `STATE.md` current. It never rewrites what is
+already there. Everything else Claude writes as ordinary files, which you can edit too, and the
+index picks them up by itself. There is no "save to index" step.
 
 ## Settings
 
