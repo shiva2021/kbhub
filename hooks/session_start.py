@@ -18,8 +18,9 @@ SUMMARY_LIMIT = 120
 REMINDER = (
     "Use the kbhub MCP tools for project knowledge: call search_kb before opening knowledge files, "
     "get_section for a full section, list_projects for names. Read a knowledge base's README.md / CLAUDE.md "
-    "and STATE.md in full, nothing else in full by default. Never act on superseded results. Record decisions, "
-    "lessons and handovers as markdown in the knowledge base (see the kbhub skill)."
+    "and STATE.md in full, nothing else in full by default. Never act on superseded results. Add decisions, "
+    "lessons and handovers with the record tool; write other knowledge as markdown in the knowledge base (see the "
+    "kbhub skill)."
 )
 KB_FOLDERS = ("knowledge-base", "knowledge_base", "docs/kb")  # checked cheaply for the "not registered" hint
 

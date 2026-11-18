@@ -19,7 +19,9 @@ def test_skill_and_block_valid():
                    "--no-sync", "--keyword-only", "D-NNN", "handovers/", "UV_PROJECT_ENVIRONMENT",
                    # v0.2: knowledge bases inside code bases, registration, scope
                    "create_kb", "scan_kbs", "register_kb", "add_rule", "knowledge-base/<topic>", "new-kb",
-                   "scope", "personal", "never commits", ".kb.toml", "where the session started"):
+                   "scope", "personal", "never commits", ".kb.toml", "where the session started",
+                   # v0.5: the record tool
+                   'kind="decision"', 'kind="lesson"', 'kind="handover"', 'supersedes="D-NNN"'):
         assert needle in body, needle
     lowered = " ".join(text.lower().split())
     for stale in ("never write knowledge-base files into a code repo", "never inside a code repo",
@@ -35,7 +37,7 @@ def test_skill_and_block_valid():
     assert lines[0] == "<!-- kbhub:start -->" and lines[-1] == "<!-- kbhub:end -->"
     assert len(lines) <= 25
     for needle in ("search_kb", "STATE.md", "superseded", "kbhub", "create_kb", "scope",
-                   "knowledge-base/<topic>"):
+                   "knowledge-base/<topic>", "record("):
         assert needle in block, needle
     assert "never write knowledge-base files into a code repo" not in " ".join(block.lower().split())
 

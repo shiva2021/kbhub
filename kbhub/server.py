@@ -14,7 +14,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from . import manage
+from . import manage, recording
 from .format import format_hits
 from .index import KBIndex, log
 
@@ -51,9 +51,12 @@ Creating and updating knowledge:
   repo or into a git worktree since, pass location=<the folder you are working in>.
 - Knowledge-base folders that exist but are not indexed (the session start mentions them, or the user
   asks you to look): scan_kbs lists them, register_kb adds them.
-- Write knowledge as markdown files in the knowledge base (decisions, lessons, STATE.md, handovers),
-  following the kbhub skill. There is no "save" tool: the index re-syncs by itself
-  when files change, so new notes are searchable at once.
+- Add a decision, lesson or handover with record(project, kind, title, body): it appends the entry
+  in the standard format without you reading the file first, numbers decisions, marks a decision
+  you pass as supersedes, and keeps the id list in STATE.md current.
+- Everything else (the rest of STATE.md, plans, runbooks, research, open items, edits to existing
+  entries) is ordinary markdown you write in the knowledge base, following the kbhub skill. The
+  index re-syncs by itself when files change, so new notes are searchable at once.
 - Mark whole files or folders superseded or background with add_rule; a single section by putting
   "superseded" in its heading.
 - Never create a .kb.toml inside a git repo.
@@ -284,6 +287,54 @@ def add_rule(project: str, glob: str, status: str | None = None, doc_type: str |
     idx.sync()
     idx._last_sync = 0.0
     return f"Rule added to {project}: {glob} -> " + ", ".join(x for x in (status, doc_type) if x) + ". Index updated."
+
+
+@_tool
+def record(project: str, kind: str, title: str, body: str, why: str | None = None,
+           decided_by: str | None = None, supersedes: str | None = None) -> str:
+    """Add one decision, lesson or handover to a knowledge base in the standard format, without
+    reading the file first. Append-only: it never rewrites an existing entry (edit the markdown
+    for that). The entry is searchable at once.
+
+    kind="decision": appended to decisions.md as the next D-NNN with today's date. With
+        supersedes, that decision's heading is marked superseded (hiding it from search) and the
+        new one links back. The id list under "Active decisions" in STATE.md is kept current.
+    kind="lesson": appended to lessons.md under a dated heading.
+    kind="handover": written to a new file handovers/YYYY-MM-DD-<title>.md; link it from STATE.md.
+
+    Args:
+        project: exact name of one knowledge base, e.g. "core/billing" (see list_projects).
+        kind: "decision", "lesson" or "handover".
+        title: short one-line title. Do not include the D-NNN id or the date.
+        body: decision: what was decided, in one or two sentences. lesson: what happened and what
+            to do differently. handover: what was done, what is in flight, how to verify it and
+            the exact next step, as markdown.
+        why: decisions only, required: the reason, and the options that were rejected.
+        decided_by: decisions only: who made the decision (the user's name), when known.
+        supersedes: decisions only: id of the decision this one replaces, e.g. "D-002".
+    """
+    idx = index()
+    proj = idx._resolve_project(project)
+    done = recording.record(idx.cfg, proj, kind, title, body, why, decided_by, supersedes)
+    what = done["id"] or f"the {kind}"
+    parts = [f"Recorded {what} in {proj.name} · {done['path']}:{done['lines']}."]
+    if done["superseded"]:
+        parts.append(f"{done['superseded']} is now marked superseded.")
+    if done["state"] == "updated":
+        parts.append('STATE.md: "Active decisions" updated.')
+    elif done["state"]:
+        parts.append(f"STATE.md {done['state']}.")
+    if kind == "handover":
+        parts.append("Link it from STATE.md.")
+    try:    # the entry is on disk: a failed sync must not look like a failed record, or it gets written twice
+        idx.sync()
+        parts.append("Searchable now.")
+    except Exception as exc:
+        log(f"sync after record failed: {type(exc).__name__}: {exc}")
+        parts.append(f"It will be searchable after the next sync (sync failed just now: {exc}).")
+    finally:
+        idx._last_sync = 0.0
+    return " ".join(parts)
 
 
 def main() -> None:

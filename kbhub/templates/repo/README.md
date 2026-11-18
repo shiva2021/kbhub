@@ -14,6 +14,6 @@ Knowledge base for **{{topic}}** in this code base. It is indexed by kbhub as pr
 - Read this file and `STATE.md` in full. For everything else, call `search_kb` (project `{{name}}`)
   before opening files here, then `get_section` for the full text of a hit.
 - Never act on superseded results.
-- Record decisions, lessons and handovers here as markdown, following the `kbhub`
-  skill, and commit them with the code change they describe.
+- Add decisions, lessons and handovers with the `record` tool; write other knowledge here as
+  markdown, following the `kbhub` skill, and commit them with the code change they describe.
 - Update `STATE.md` at the end of every session on this topic.
