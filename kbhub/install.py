@@ -25,6 +25,7 @@ OLLAMA_MODEL = "nomic-embed-text"
 BLOCK_START = "<!-- kbhub:start -->"
 BLOCK_END = "<!-- kbhub:end -->"
 PATH_LINE = 'export PATH="$HOME/.local/bin:$PATH"'
+END_HOOK_TIMEOUT = 30    # seconds the SessionEnd hook may take
 
 
 def _block_re(name: str) -> re.Pattern:
@@ -72,6 +73,10 @@ def _is_our_command(hook: dict) -> bool:
     return str(REPO / "hooks" / "session_start.py") in str(hook.get("command", ""))
 
 
+def _is_our_end_command(hook: dict) -> bool:
+    return str(REPO / "hooks" / "session_end.py") in str(hook.get("command", ""))
+
+
 def _run(cmd: list[str], env: dict | None = None, timeout: int = 900) -> tuple[int, str]:
     """Run a command; returns (exit code, combined output). A missing program is exit 127."""
     try:
@@ -85,6 +90,10 @@ def _run(cmd: list[str], env: dict | None = None, timeout: int = 900) -> tuple[i
 
 def _hook_command() -> str:
     return f"{shlex.quote(str(REPO / '.venv' / 'bin' / 'python'))} {shlex.quote(str(REPO / 'hooks' / 'session_start.py'))}"
+
+
+def _end_hook_command() -> str:
+    return f"{shlex.quote(str(REPO / '.venv' / 'bin' / 'python'))} {shlex.quote(str(REPO / 'hooks' / 'session_end.py'))}"
 
 
 def _is_our_hook(entry: dict) -> bool:
@@ -104,8 +113,9 @@ def _load_settings(path: Path) -> dict:
     hooks = settings.get("hooks")
     if "hooks" in settings and not isinstance(hooks, dict):
         raise ValueError(f'{path}: "hooks" is not an object; fix it by hand and run this again')
-    if isinstance(hooks, dict) and "SessionStart" in hooks and not isinstance(hooks["SessionStart"], list):
-        raise ValueError(f'{path}: "hooks.SessionStart" is not a list; fix it by hand and run this again')
+    for event in ("SessionStart", "SessionEnd"):
+        if isinstance(hooks, dict) and event in hooks and not isinstance(hooks[event], list):
+            raise ValueError(f'{path}: "hooks.{event}" is not a list; fix it by hand and run this again')
     return settings
 
 
@@ -181,8 +191,13 @@ def _step_hook(claude_home: Path, log: list[str]) -> None:
     entries = _without_hooks(hooks.get("SessionStart", []), _is_our_command)
     entries.append({"hooks": [{"type": "command", "command": _hook_command()}]})
     hooks["SessionStart"] = entries
+    # SessionEnd pushes shared spaces (kbhub.share). Claude Code gives such hooks 1.5 seconds unless
+    # the entry asks for more.
+    ends = _without_hooks(hooks.get("SessionEnd", []), _is_our_end_command)
+    ends.append({"hooks": [{"type": "command", "command": _end_hook_command(), "timeout": END_HOOK_TIMEOUT}]})
+    hooks["SessionEnd"] = ends
     changed = _save_settings(path, settings, original)
-    log.append(f"hook: SessionStart hook {'installed in' if changed else 'already in'} {path}")
+    log.append(f"hook: SessionStart and SessionEnd hooks {'installed in' if changed else 'already in'} {path}")
 
 
 def _step_claude_md(claude_home: Path, log: list[str]) -> None:
@@ -287,16 +302,22 @@ def uninstall(claude_home: Path, kb_home: Path, run_claude: bool = True, bin_dir
         log.append(f"skill: removed link {link}")
 
     settings = json.loads(json.dumps(original))
-    entries = _session_start_entries(settings)
-    if any(_is_our_hook(e) for e in entries):
-        hooks = settings["hooks"]
-        hooks["SessionStart"] = _without_hooks(hooks["SessionStart"], _is_our_command)
-        if not hooks["SessionStart"]:
-            del hooks["SessionStart"]
-        if not hooks:
-            del settings["hooks"]
+    hooks = settings.get("hooks")
+    for event, ours in (("SessionStart", _is_our_command), ("SessionEnd", _is_our_end_command)):
+        entries = hooks.get(event) if isinstance(hooks, dict) else None
+        if not isinstance(entries, list):
+            continue
+        kept = _without_hooks(entries, ours)
+        if kept == entries:
+            continue                     # none of ours here: leave it exactly as it is
+        hooks[event] = kept
+        if not kept:
+            del hooks[event]
+    if settings != original and isinstance(hooks, dict) and not hooks:
+        del settings["hooks"]
+    if settings != original:
         _save_settings(path, settings, original)
-        log.append(f"hook: removed SessionStart hook from {path}")
+        log.append(f"hook: removed the kbhub hooks from {path}")
 
     md = claude_home / "CLAUDE.md"
     text = md.read_text(encoding="utf-8") if md.exists() else ""

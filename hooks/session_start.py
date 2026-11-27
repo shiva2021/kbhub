@@ -4,8 +4,8 @@
 Inside a knowledge-base project it injects the project name and its STATE.md; anywhere else it
 lists the projects. In a code base with no knowledge base it tells the session to ask the user,
 once, whether they want one (the answer is kept by kbhub.prefs). Standard library plus
-kbhub.config/registry/prefs only (no lancedb), fast, writes nothing, and always exits 0 so it can
-never block a session."""
+kbhub.config/registry/prefs/share only (no lancedb), fast, and always exits 0 so it can never block
+a session. The only thing it writes is the sync of shared spaces (kbhub.share), when there are any."""
 from __future__ import annotations
 
 import json
@@ -15,6 +15,7 @@ from pathlib import Path
 
 STATE_LIMIT = 6000
 SUMMARY_LIMIT = 120
+NET_TIMEOUT = 4          # seconds each network step of a shared-space sync may take
 REMINDER = (
     "Use the kbhub MCP tools for project knowledge: call search_kb before opening knowledge files, "
     "get_section for a full section, list_projects for names. Read a knowledge base's README.md / CLAUDE.md "
@@ -110,6 +111,18 @@ def build_context(cwd: Path, cfg) -> str:
     return "\n\n".join(parts) + f"\n\n{scope_line}\n{REMINDER}"
 
 
+def _sync_spaces(cfg) -> str:
+    """Pull and push the shared spaces, within a few seconds, and say only what a session needs to
+    know: notes arrived, something is waiting to be pushed, or a conflict copy needs a look."""
+    if not cfg.spaces:
+        return ""
+    try:
+        from kbhub import share
+        return "\n".join(filter(None, (share.describe(r, quiet=True) for r in share.sync_all(cfg, NET_TIMEOUT))))
+    except Exception:
+        return ""
+
+
 def main() -> int:
     try:
         from kbhub.config import GlobalConfig
@@ -118,7 +131,9 @@ def main() -> int:
         except ValueError:
             payload = {}
         cwd = payload.get("cwd") if isinstance(payload, dict) else None
-        context = build_context(Path(cwd or os.getcwd()), GlobalConfig.load())
+        cfg = GlobalConfig.load()
+        shared = _sync_spaces(cfg)       # first, so notes that just arrived are listed below
+        context = "\n\n".join(filter(None, [build_context(Path(cwd or os.getcwd()), cfg), shared]))
         if context:
             print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart",
                                                      "additionalContext": context}}))

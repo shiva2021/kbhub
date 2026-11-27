@@ -134,6 +134,28 @@ You mostly just talk to Claude. Some things worth knowing:
 
 New and edited notes are searchable straight away; there is no "save to index" step.
 
+## Use it on more than one device
+
+Your notes can follow you to another Mac through a private git repository. Only the notes travel;
+each device builds its own search index from them.
+
+On the first device:
+
+```
+kbhub share init --remote git@github.com:you/my-notes.git
+kbhub share add <name>
+```
+
+`kbhub share add` shows which files will leave the device and asks before sending them. Nothing
+is shared until you name it. On every other device:
+
+```
+kbhub share join git@github.com:you/my-notes.git
+```
+
+After that it runs by itself: kbhub fetches new notes when a Claude session starts and sends
+yours when it ends. The [reference](docs/reference.md#sharing-across-devices) has the details.
+
 ## Update, check, remove
 
 | Command | What it does |

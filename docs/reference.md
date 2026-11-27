@@ -15,7 +15,8 @@ You do not need to read it top to bottom. Jump to the part you need:
 - [What Claude can do](#what-claude-can-do)
 - [Settings](#settings)
 - [Search quality](#search-quality)
-- [Updating and sharing](#updating-and-sharing)
+- [Sharing across devices](#sharing-across-devices)
+- [Updating kbhub](#updating-kbhub)
 
 ## The short version
 
@@ -39,13 +40,14 @@ there.
 | `~/.kbhub/registry.json` | The list of knowledge bases that live inside your code projects. |
 | `~/.kbhub/db/` | The search index. You can delete it at any time; kbhub builds it again from your notes. |
 | `~/.kbhub-config/projects.json` | Your answer, per code project, to "keep a knowledge base for this project?", and which knowledge bases belong to it. |
+| `~/.kbhub-config/spaces/` | The git data of your shared spaces. See [Sharing across devices](#sharing-across-devices). |
 
 **What it adds elsewhere**
 
 | Path | What it is |
 | --- | --- |
 | `~/.claude/skills/kbhub` | A link to the skill that teaches Claude how to keep a knowledge base tidy. |
-| `~/.claude/settings.json` | One entry, so each Claude session is told at start-up which knowledge bases exist, and whether to ask you about one. |
+| `~/.claude/settings.json` | Two entries. One tells each Claude session at start-up which knowledge bases exist, and whether to ask you about one. The other sends your shared notes when a session ends. |
 | `~/.claude/CLAUDE.md` | One short block of text, between `<!-- kbhub:start -->` and `<!-- kbhub:end -->`. |
 | `~/.local/bin/kbhub` | The `kbhub` command you type in Terminal. |
 
@@ -221,6 +223,17 @@ Options for `search`:
 | `kbhub unregister NAME` | Take one out of the index. Your files are not touched. |
 | `kbhub add-project PATH [--name N]` | Add a standalone folder that sits outside your scan folders. |
 
+### Sharing across devices
+
+| Command | What it does |
+| --- | --- |
+| `kbhub share init [--remote URL]` | Start a shared space in your knowledge-base folder. Shares nothing yet. |
+| `kbhub share add NAME` | Share one knowledge base. Shows the files first and asks. |
+| `kbhub share remove NAME` | Stop sharing it. The files stay on this device. |
+| `kbhub share join URL` | Connect another device to a space that already exists. |
+| `kbhub share sync` | Fetch and send now. |
+| `kbhub share status` | What is shared, and anything waiting. |
+
 ### Keeping the index in order
 
 | Command | What it does |
@@ -308,10 +321,88 @@ If Ollama is not running, search still works, but by exact words only. Nothing i
 fills in the missing meaning data the next time Ollama is up. `kbhub doctor` tells you which mode
 you are in.
 
-## Updating and sharing
+## Sharing across devices
+
+You can use the same notes on more than one device. kbhub sends the notes through a private git
+repository that you own (on GitHub, for example). The search index is never sent: each device
+builds its own from its copy of the notes, so devices can be offline, and can even use different
+search models.
+
+### Setting it up
+
+1. Create an empty private repository.
+2. On the device that has the notes:
+
+   ```
+   kbhub share init --remote git@github.com:you/my-notes.git
+   kbhub share add shop/billing
+   ```
+
+3. On each other device, after installing kbhub:
+
+   ```
+   kbhub share join git@github.com:you/my-notes.git
+   ```
+
+`kbhub share init` turns your knowledge-base folder into a **space**. A space shares nothing by
+itself. Each `kbhub share add` names one knowledge base, shows you its files, its scope and where
+they are going, and asks before anything leaves the device. Everything else in the folder stays
+where it is.
+
+Only standalone knowledge bases can be shared this way. One that lives inside a code project
+already travels with that project.
+
+### What happens by itself
+
+- When a Claude session starts, kbhub fetches notes from your other devices. It waits a few
+  seconds at most, so a slow network never holds up a session.
+- When Claude records a decision, lesson or handover, kbhub fetches first and sends straight after.
+- When a session ends, kbhub sends whatever else was written.
+- With no network, nothing is lost. The note is saved and searchable on the device, and kbhub
+  sends it the next time.
+
+### When two devices change the same thing
+
+| What changed | What kbhub does |
+| --- | --- |
+| Both added a decision or a lesson | Keeps both. If both decisions took the same number, the newer arrival takes the next one. |
+| Both changed different parts of a file | Merges them. |
+| Both changed the same lines | Keeps the version from the other device, and saves yours beside it in a `.kbhub-conflicts` folder. The next Claude session is told, and merges the two. |
+
+`kbhub share status` lists any saved copies that are still waiting.
+
+### Joining with notes already on the device
+
+`kbhub share join` writes the files you do not have. It never changes or sends a file of yours
+without asking. If a shared folder already exists on the device and holds a file with different
+content, or a file the shared notes do not have, kbhub leaves it alone, lists it, and pauses the
+space. Then either:
+
+- move those files somewhere else and run `kbhub share sync`, or
+- run `kbhub share sync --keep-local` to share them as they are on this device.
+
+The same happens later if another device starts sharing a folder that this device also has.
+
+### Good to know
+
+- **Who can read the notes.** Anyone who can read the repository. Keep it private.
+- **Work and personal.** A shared knowledge base keeps its scope on every device.
+- **Two guards.** The list of shared knowledge bases lives in a `.gitignore` file that kbhub writes in
+  the folder. Leave it alone. If it goes missing kbhub puts it back, and kbhub refuses to send any
+  file from outside the listed knowledge bases even if that file has been changed.
+- **Stopping.** After `kbhub share remove NAME` the files stay on the device you ran it on. Your
+  other devices remove their copy the next time they sync, and the repository keeps the history.
+- **No `.git` in your notes folder.** The git data is kept in `~/.kbhub-config/spaces/`, so the
+  folder stays a plain folder of notes. To look at the history, use
+  `kbhub share git -- log --oneline`.
+- **Signing.** kbhub saves these changes without signing them, so that a passphrase prompt can
+  never hold up a session.
+- `kbhub doctor` shows a line for each space.
+
+## Updating kbhub
 
 kbhub is installed as a git copy of this repository in `~/.kbhub`. `kbhub update` fetches the
 newest version with `git pull` and reconnects it.
 
-To share kbhub with someone, give their GitHub account access to the repository and send them the
-two install lines from the README. That is all they need.
+To give kbhub to someone else, give their GitHub account access to the repository and send them
+the two install lines from the README. That is all they need.

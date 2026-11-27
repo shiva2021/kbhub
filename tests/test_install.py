@@ -184,3 +184,25 @@ def test_ollama_pull_skipped_when_model_already_present(claude_home, tmp_path, m
     install(claude_home, kb_home, run_claude=False, check_ollama=True, run_index=False)
     assert ["ollama", "pull", "nomic-embed-text"] not in calls
     assert 'backend = "ollama"' in (kb_home / "config.toml").read_text()
+
+
+def test_session_end_hook_installed_once_and_removed(claude_home, kb_home):
+    (claude_home / "settings.json").write_text(json.dumps(
+        {"hooks": {"SessionEnd": [{"hooks": [{"type": "command", "command": "echo bye"}]}]}}))
+    go(claude_home, kb_home)
+    go(claude_home, kb_home)
+    ends = json.loads((claude_home / "settings.json").read_text())["hooks"]["SessionEnd"]
+    ours = [h for e in ends for h in e["hooks"] if "session_end.py" in h["command"]]
+    assert len(ends) == 2 and len(ours) == 1 and ours[0]["timeout"] == 30
+    assert ours[0]["command"] == f"{REPO}/.venv/bin/python {REPO}/hooks/session_end.py"
+    uninstall(claude_home, kb_home, run_claude=False)
+    settings = json.loads((claude_home / "settings.json").read_text())
+    assert settings == {"hooks": {"SessionEnd": [{"hooks": [{"type": "command", "command": "echo bye"}]}]}}
+
+
+def test_uninstall_leaves_settings_without_our_hooks_untouched(claude_home, kb_home):
+    original = {"hooks": {"SessionStart": []}, "model": "x"}
+    (claude_home / "settings.json").write_text(json.dumps(original))
+    log = uninstall(claude_home, kb_home, run_claude=False)
+    assert json.loads((claude_home / "settings.json").read_text()) == original
+    assert not [line for line in log if line.startswith("hook:")]

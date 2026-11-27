@@ -162,6 +162,21 @@ with what was done, what is in flight, how to verify it, and the exact next step
   note = "Replaced by D-012"
   ```
 
+## Knowledge bases shared between devices
+
+Some knowledge bases are shared with the user's other devices through a private git repository
+(`kbhub share status` lists them). You write notes exactly as before:
+
+- kbhub pulls when a session starts, pulls and pushes around every `record`, and pushes when the
+  session ends. Never run git in a knowledge-base folder, and never create a `.git` there: the
+  git data lives in `~/.kbhub-config/spaces/`.
+- When the session start, or a tool reply, says conflict copies are waiting under
+  `.kbhub-conflicts/`, another device changed the same lines. The current file holds the other
+  device's version and the copy holds this device's. Compare them, merge what is missing into
+  the current file, then delete the copy.
+- Sharing itself is the user's decision. Only they run `kbhub share add <name>`, which shows the
+  files before anything leaves the device. Do not share a knowledge base on your own.
+
 ## Using it from Cowork
 
 Cowork has no MCP server. It has its own skill, `kbhub-cowork` (uploaded to the claude.ai

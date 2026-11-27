@@ -40,6 +40,16 @@ kb_scan_depth = 7
 # Folder names (or trailing paths) that `scan` treats as knowledge bases.
 kb_folder_names = ["knowledge-base", "knowledge_base", "docs/kb"]
 
+# Shared spaces: folders of knowledge bases you share with your other devices through a private
+# git repository (`kbhub share init`, `kbhub share join` write these for you). Only where the
+# folder and the remote are is kept here; which knowledge bases are shared is recorded in the
+# space's own .gitignore, and the git data lives in ~/.kbhub-config/spaces/, never in the folder.
+#
+# [[spaces]]
+# name = "personal"
+# path = "~/knowledge-bases"
+# remote = "git@github.com:you/notes.git"
+
 [embedding]
 # "ollama":    best quality; needs Ollama running with the model below pulled.
 # "wordllama": bundled static model, fully offline, zero setup (lower quality).

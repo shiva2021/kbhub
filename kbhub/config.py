@@ -97,6 +97,37 @@ def _typed(path: Path, raw: dict, key: str, kind, default):
     return value
 
 
+SPACE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
+
+
+@dataclass(frozen=True)
+class Space:
+    """A folder of knowledge bases shared through git. Only device-local facts live here; which
+    knowledge bases are shared is recorded in the space's own committed `.gitignore`."""
+    name: str
+    path: Path
+    remote: str | None = None
+
+
+def _spaces(path: Path, raw: dict) -> list[Space]:
+    tables = raw.get("spaces", [])
+    if not isinstance(tables, list) or not all(isinstance(t, dict) for t in tables):
+        raise ConfigError(f"{path}: spaces must be [[spaces]] tables")
+    out: list[Space] = []
+    for t in tables:
+        name, folder, remote = t.get("name"), t.get("path"), t.get("remote")
+        if not isinstance(name, str) or not SPACE_NAME_RE.match(name):
+            raise ConfigError(f"{path}: a [[spaces]] name must be lower-case letters, digits, - or _")
+        if any(s.name == name for s in out):
+            raise ConfigError(f"{path}: two [[spaces]] tables are named {name!r}")
+        if not isinstance(folder, str) or not folder.strip():
+            raise ConfigError(f"{path}: space {name!r} needs a path")
+        if remote is not None and (not isinstance(remote, str) or not remote.strip()):
+            raise ConfigError(f"{path}: space {name!r}: remote must be a non-empty string")
+        out.append(Space(name, expand(folder), remote))
+    return out
+
+
 @dataclass
 class GlobalConfig:
     path: Path
@@ -118,6 +149,7 @@ class GlobalConfig:
     kb_scan_depth: int = 7
     kb_folder_names: list[str] = field(default_factory=list)
     index_fingerprint: str = ""     # hash of the keys that change what gets indexed: rebuild?
+    spaces: list[Space] = field(default_factory=list)   # folders shared through git (kbhub.share)
 
     @classmethod
     def load(cls, path: Path | None = None) -> "GlobalConfig":
@@ -164,6 +196,7 @@ class GlobalConfig:
             kb_scan_depth=number("kb_scan_depth"),
             kb_folder_names=list(_typed(p, raw, "kb_folder_names", list, DEFAULTS["kb_folder_names"])),
             index_fingerprint=hashlib.sha1(json.dumps(index_keys, sort_keys=True).encode()).hexdigest(),
+            spaces=_spaces(p, raw),
         )
 
 

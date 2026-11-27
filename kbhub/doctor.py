@@ -84,6 +84,8 @@ def checks(env: Env) -> list[Check]:
     elif backend:
         out.append(Check("search quality", True, f"built-in offline model ({backend})", required=False))
 
+    out.extend(_space_checks(env))
+
     manifest = env.kb_home / "db" / "manifest.json"
     if manifest.is_file():
         code, text = env.run([sys.executable, "-m", "kbhub.cli", "projects", "--no-sync", "--scope", "all"],
@@ -93,6 +95,42 @@ def checks(env: Env) -> list[Check]:
                          else (text.splitlines()[-1] if text else "cannot be read"), "run `kbhub index --rebuild`"))
     else:
         out.append(Check("index", False, "not built yet", "run `kbhub index`"))
+    return out
+
+
+def _space_checks(env: Env) -> list[Check]:
+    """One line per shared space (kbhub.share). Never required: the rest of kbhub works without them."""
+    from . import share
+    from .config import ConfigError, GlobalConfig
+    try:
+        cfg = GlobalConfig.load(env.kb_home / "config.toml")
+        rows = share.status(cfg)
+    except (ConfigError, OSError, ValueError):
+        return []
+    out = []
+    for r in rows:
+        name = f"shared space {r['name']}"
+        if not env.find("git"):
+            out.append(Check(name, False, "git is not installed", "install git", required=False))
+        elif not r["ready"]:
+            out.append(Check(name, False, "not set up on this device",
+                             f"run `kbhub share join {r['remote'] or 'URL'}`", required=False))
+        elif r["paused"]:
+            out.append(Check(name, False, f"paused: {len(r['paused'])} local file(s) differ from the shared ones",
+                             "run `kbhub share status`, move them aside, then `kbhub share sync`", required=False))
+        elif r["conflicts"]:
+            out.append(Check(name, False, f"{len(r['conflicts'])} conflict copy(ies) waiting",
+                             "merge each into its file and delete it (`kbhub share status` lists them)",
+                             required=False))
+        elif not r["remote"]:
+            out.append(Check(name, False, "no remote, so nothing leaves this device",
+                             "run `kbhub share init --remote URL`", required=False))
+        elif r["ahead"] or r["changes"]:
+            out.append(Check(name, False, f"{r['ahead']} commit(s) and {r['changes']} change(s) not pushed yet",
+                             "run `kbhub share sync`", required=False))
+        else:
+            out.append(Check(name, True, f"{len(r['shared'])} knowledge base(s) shared with {r['remote']}",
+                             required=False))
     return out
 
 
