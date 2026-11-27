@@ -13,6 +13,7 @@ device agrees on the list.
 `sync_space` is the one sync: commit, fetch, rebase, repair, push. It never raises."""
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import json
 import os
@@ -54,31 +55,51 @@ def _host() -> str:
     return name or "device"
 
 
-def _git(space: Space, *args: str, timeout: float | None = None, stdin: str | None = None) -> tuple[int, str, str]:
+def _git(space: Space, *args: str, timeout: float | None = None, stdin: str | None = None,
+         raw: bool = False) -> tuple[int, str, str]:
     """Run git against the space; returns (exit code, stdout, stderr). Never prompts, never
-    raises: a missing git is 127 and a timeout is 124."""
+    raises: a missing git is 127 and a timeout is 124. With `raw`, stdout is bytes, untouched."""
     cmd = ["git", "--git-dir", str(git_dir(space)), "--work-tree", str(space.path),
            "-c", "commit.gpgsign=false", "-c", "core.quotepath=false", *args]
     env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")}
     env.update({"GIT_TERMINAL_PROMPT": "0", "GIT_EDITOR": "true", "GIT_MERGE_AUTOEDIT": "no"})
-    env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=8")
+    _quiet_ssh(env)
     if not _has_identity(env):       # commits and rebases both need one
         for who in ("AUTHOR", "COMMITTER"):
             env.setdefault(f"GIT_{who}_NAME", "kbhub")
             env.setdefault(f"GIT_{who}_EMAIL", f"kbhub@{_host()}")
+    empty = b"" if raw else ""
     try:
-        p = subprocess.run(cmd, cwd=space.path, capture_output=True, encoding="utf-8", errors="surrogateescape",
-                           timeout=timeout, env=env, input=stdin)
-        return p.returncode, p.stdout, p.stderr.strip()
+        p = subprocess.run(cmd, cwd=space.path, capture_output=True, timeout=timeout, env=env,
+                           input=stdin.encode("utf-8", "surrogateescape") if stdin is not None else None)
+        out = p.stdout if raw else p.stdout.decode("utf-8", "surrogateescape")
+        return p.returncode, out, p.stderr.decode("utf-8", "replace").strip()
     except FileNotFoundError:
-        return 127, "", "git is not installed"
+        return 127, empty, "git is not installed"
     except subprocess.TimeoutExpired:
-        return 124, "", "timed out"
+        return 124, empty, "timed out"
     except OSError as exc:
-        return 1, "", str(exc)
+        return 1, empty, str(exc)
 
 
 _identity: dict[tuple, bool] = {}
+_own_ssh: dict[tuple, bool] = {}
+
+
+def _quiet_ssh(env: dict) -> None:
+    """Make ssh fail instead of asking or hanging, unless the user chose their own ssh command:
+    GIT_SSH_COMMAND would override `core.sshCommand` (a key picked per account, for example)."""
+    if "GIT_SSH_COMMAND" in env:
+        return
+    key = (env.get("GIT_CONFIG_GLOBAL"), env.get("HOME"))
+    if key not in _own_ssh:
+        try:
+            p = subprocess.run(["git", "config", "--get", "core.sshCommand"], capture_output=True, text=True, env=env)
+            _own_ssh[key] = p.returncode == 0 and bool(p.stdout.strip())
+        except OSError:
+            _own_ssh[key] = False
+    if not _own_ssh[key]:
+        env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o ConnectTimeout=8"
 
 
 def _has_identity(env: dict) -> bool:
@@ -142,11 +163,11 @@ def _commit(space: Space, message: str) -> bool:
     Second guard, whatever the ignore file says: a file outside the shared folders is never
     committed."""
     _guard_ignore(space)
+    _untrack_outside(space)
     _must(space, "add", "-A")
     allowed = shared(space)
     staged = _z(_must(space, "diff", "--cached", "--name-only", "--diff-filter=d", "-z"))
-    outside = [f for f in staged if f not in (IGNORE, ATTRS)
-               and not any(f == r or f.startswith(r + "/") for r in allowed)]
+    outside = [f for f in staged if f not in (IGNORE, ATTRS) and not _inside(f, allowed)]
     if outside:
         _must(space, "reset", "--quiet")
         shown = ", ".join(outside[:5]) + (f" and {len(outside) - 5} more" if len(outside) > 5 else "")
@@ -158,9 +179,48 @@ def _commit(space: Space, message: str) -> bool:
     return True
 
 
+def _text(data: bytes) -> str:
+    return data.decode("utf-8", "surrogateescape")
+
+
+def _read_text(path: Path) -> str:
+    """A file's text with its line ends as they are (no newline translation)."""
+    return _text(path.read_bytes())
+
+
 def _write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8", errors="surrogateescape")
+    path.write_bytes(text.encode("utf-8", "surrogateescape"))
+
+
+@contextlib.contextmanager
+def _locked(space: Space):
+    """The space's lock, without waiting: yields False when another session holds it."""
+    git_dir(space).parent.mkdir(parents=True, exist_ok=True)
+    with open(git_dir(space).parent / f"{space.name}.lock", "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _inside(path: str, rels) -> bool:
+    return any(path == r or path.startswith(r + "/") for r in rels)
+
+
+def _untrack_outside(space: Space) -> None:
+    """Stop tracking anything outside the shared folders (the files stay on disk). A knowledge
+    base another device stopped sharing can come back through a local commit replayed on top."""
+    allowed = shared(space)
+    stray = [f for f in _z(_must(space, "ls-files", "-z")) if f not in (IGNORE, ATTRS) and not _inside(f, allowed)]
+    if stray:
+        _must(space, "rm", "--cached", "--quiet", "--ignore-unmatch", "--pathspec-from-file=-",
+              "--pathspec-file-nul", stdin="\0".join(stray) + "\0")
 
 
 # ------------------------------------------------------------------ the allowlist
@@ -310,7 +370,7 @@ def init(cfg: GlobalConfig, name: str = "personal", path=None, remote: str | Non
 def _remote_has_notes(space: Space, remote: str) -> bool:
     try:
         env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-        env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=8")
+        _quiet_ssh(env)
         p = subprocess.run(["git", "ls-remote", "--heads", remote, BRANCH], capture_output=True, text=True,
                            timeout=10, env=env)
     except (OSError, subprocess.TimeoutExpired):
@@ -414,12 +474,39 @@ def remove(cfg: GlobalConfig, name: str, net_timeout: float = 60) -> dict:
                 rel = got if got in current else None
             except ValueError:
                 rel = None
-        if rel is None:
-            continue
-        _write_text(space.path / IGNORE, ignore_text([r for r in current if r != rel]))
-        _must(space, "rm", "-r", "--cached", "--quiet", "--ignore-unmatch", "--", rel)
-        return sync_space(space, net_timeout, message=f"kbhub: stop sharing {rel}")
+        if rel is not None:
+            return _remove(space, rel, current, net_timeout)
     raise ValueError(f"{name!r} is not shared in any space")
+
+
+def _remove(space: Space, rel: str, current: list[str], net_timeout: float) -> dict:
+    res = _result(space)
+    with _locked(space) as mine:
+        if not mine:
+            raise ValueError("another session is syncing this space; try again in a moment")
+        # Everything in and out first, so the removal is the only thing left to replay.
+        before = _result(space)
+        _sync(space, before, net_timeout, False, f"kbhub: notes from {_host()}")
+        if before["pending"]:
+            raise ValueError(f"{rel} is still shared: the space must be in step with the remote first ("
+                             + "; ".join(before["notes"]) + "). Run `kbhub share sync` and try again.")
+        old_ignore = _read_text(space.path / IGNORE)
+        with tempfile.TemporaryDirectory(dir=git_dir(space).parent) as tmp:
+            keep = Path(tmp) / "copy"
+            shutil.copytree(space.path / rel, keep, symlinks=True)
+            try:
+                _must(space, "rm", "-r", "--cached", "--quiet", "--ignore-unmatch", "--", rel)
+                _write_text(space.path / IGNORE, ignore_text([r for r in current if r != rel]))
+                _sync(space, res, net_timeout, False, f"kbhub: stop sharing {rel}")
+            except Exception:
+                if rel in _listed(_text(_git(space, "show", f"HEAD:{IGNORE}", raw=True)[1])):
+                    _write_text(space.path / IGNORE, old_ignore)     # not committed: as it was
+                    _git(space, "reset", "--quiet")
+                raise
+            finally:        # git may delete or replace the files while replaying; they stay, as they were
+                shutil.copytree(keep, space.path / rel, symlinks=True, dirs_exist_ok=True)
+    res["conflicts"] = conflict_files(space)
+    return res
 
 
 def join(cfg: GlobalConfig, url: str, name: str = "personal", path=None, net_timeout: float = 300) -> dict:
@@ -442,9 +529,17 @@ def join(cfg: GlobalConfig, url: str, name: str = "personal", path=None, net_tim
         shutil.rmtree(git_dir(space), ignore_errors=True)
         raise
     landed, differing = _land(space)
-    if differing:
-        _write_text(_paused_file(space), "\n".join(differing) + "\n")
-    return {"cfg": _save_spaces(cfg, [*cfg.spaces, space]), "space": space, "landed": landed, "differing": differing}
+    extra = _untracked(space)
+    if differing or extra:
+        _write_text(_paused_file(space), "\n".join([*differing, *extra]) + "\n")
+    return {"cfg": _save_spaces(cfg, [*cfg.spaces, space]), "space": space, "landed": landed,
+            "differing": differing, "extra": extra}
+
+
+def _untracked(space: Space) -> list[str]:
+    """Local files inside the shared folders that the shared notes do not have: the next sync
+    would send them."""
+    return sorted(_z(_must(space, "ls-files", "-z", "--others", "--exclude-standard")))
 
 
 def _land(space: Space) -> tuple[int, list[str]]:
@@ -465,22 +560,16 @@ def sync_space(space: Space, net_timeout: float = 20, keep_local: bool = False, 
     Returns {"space", "ok", "pulled" (files that changed here), "pushed", "pending" (None, "pull",
     "push" or "paused"), "saved" (conflict copies written now), "conflicts" (all waiting conflict
     copies), "notes"}."""
-    res = {"space": space.name, "ok": True, "pulled": [], "pushed": False, "pending": None, "saved": [],
-           "conflicts": [], "notes": [], "skipped": False}
+    res = _result(space)
     if not git_dir(space).is_dir() or not space.path.is_dir():
         res.update(ok=False, notes=["not set up on this device (run `kbhub share join` or `kbhub share init`)"])
         return res
     try:
-        with open(git_dir(space).parent / f"{space.name}.lock", "w") as lock:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:      # another session is syncing; its result is as good as ours
+        with _locked(space) as mine:
+            if not mine:                 # another session is syncing; its result is as good as ours
                 res.update(skipped=True, notes=["another session is syncing"])
                 return res
-            try:
-                _sync(space, res, net_timeout, keep_local, message or f"kbhub: notes from {_host()}")
-            finally:
-                fcntl.flock(lock, fcntl.LOCK_UN)
+            _sync(space, res, net_timeout, keep_local, message or f"kbhub: notes from {_host()}")
     except Exception as exc:
         if _rebasing(space):
             _abort_rebase(space)
@@ -490,20 +579,27 @@ def sync_space(space: Space, net_timeout: float = 20, keep_local: bool = False, 
     return res
 
 
+def _result(space: Space) -> dict:
+    return {"space": space.name, "ok": True, "pulled": [], "pushed": False, "pending": None, "saved": [],
+            "conflicts": [], "notes": [], "skipped": False}
+
+
 def _sync(space: Space, res: dict, net_timeout: float, keep_local: bool, message: str) -> None:
     (git_dir(space) / "index.lock").unlink(missing_ok=True)   # we hold the space lock: a leftover is stale
+    marker = git_dir(space) / "kbhub-repair"     # a merge of both sides still has to be tidied
     if _rebasing(space):                 # left behind by an interrupted run
         _abort_rebase(space)
+        marker.unlink(missing_ok=True)
     paused = _paused_file(space)
     if paused.exists():
         if not keep_local:
             listed = set(paused.read_text(encoding="utf-8").split("\n")) - {""}
-            still = sorted(listed & set(_land(space)[1]))
+            still = sorted(listed & (set(_land(space)[1]) | set(_untracked(space))))
             if still:
                 res["pending"] = "paused"
-                res["notes"].append("paused: these local files differ from the shared ones and were left alone: "
-                                    + ", ".join(still) + ". Move them aside, or run `kbhub share sync --keep-local` "
-                                    "to share the local versions.")
+                res["notes"].append("paused: these local files differ from the shared notes, or are not in them, "
+                                    "and were left alone: " + ", ".join(still) + ". Move them aside, or run "
+                                    "`kbhub share sync --keep-local` to share them as they are here.")
                 return
         paused.unlink()
     _commit(space, message)
@@ -525,17 +621,34 @@ def _sync(space: Space, res: dict, net_timeout: float, keep_local: bool, message
             res["notes"].append("not pulled: these local files are not shared yet but exist in the shared notes with "
                                 "other content: " + ", ".join(blocked) + ". Move them aside and sync again.")
             return
+        extra = [] if keep_local else _local_extras(space)
+        if extra:
+            res["pending"] = "pull"
+            res["notes"].append("not pulled: another device now shares a folder that this device also has, with "
+                                "files of its own: " + ", ".join(extra[:8]) + (" ..." if len(extra) > 8 else "")
+                                + ". Move them aside, or run `kbhub share sync --keep-local` to share them too.")
+            return
+        if mine:                         # written before the rebase, so an interrupted run still tidies
+            local = set(_z(_must(space, "diff", "--name-only", "-z", f"{UPSTREAM}...HEAD")))
+            _write_text(marker, json.dumps(sorted(local & set(incoming))))
         if not _rebase(space, res):
+            marker.unlink(missing_ok=True)
             res["pending"] = "pull"
             res["notes"].append("could not merge the incoming notes; nothing was changed")
             return
         res["pulled"] = incoming
+    if res["pulled"] or marker.exists():
         tidy = ignore_text(shared(space))    # two devices' lists merged line by line: make it whole again
-        if _is_ours(space.path / IGNORE) and (space.path / IGNORE).read_text(encoding="utf-8") != tidy:
+        if _is_ours(space.path / IGNORE) and _read_text(space.path / IGNORE) != tidy:
             _write_text(space.path / IGNORE, tidy)
-        if mine:
-            repair(space)
+        if marker.exists():
+            try:
+                both = set(json.loads(marker.read_text(encoding="utf-8") or "[]"))
+            except ValueError:
+                both = set()
+            repair(space, both)
         _commit(space, "kbhub: tidy after merge")
+        marker.unlink(missing_ok=True)
     if not upstream or _count(space, f"{UPSTREAM}..HEAD"):
         code, _, err = _git(space, "push", "--quiet", "origin", f"HEAD:refs/heads/{BRANCH}", timeout=net_timeout)
         if code == 0:
@@ -569,6 +682,26 @@ def _would_overwrite(space: Space) -> list[str]:
     return out
 
 
+def _local_extras(space: Space) -> list[str]:
+    """Files this device has in a folder that the incoming notes start to share, and that are not
+    part of those notes. Pulling would put the folder on the list and the next sync would send
+    them, without the preview `share add` gives."""
+    code, theirs, _ = _git(space, "show", f"{UPSTREAM}:{IGNORE}")
+    out = []
+    for rel in sorted(_listed(theirs if code == 0 else "") - set(shared(space))):
+        root = space.path / rel
+        if not root.is_dir():
+            continue
+        known = set(_z(_must(space, "ls-tree", "-r", "--name-only", "-z", UPSTREAM, "--", rel)))
+        for folder, dirs, names in os.walk(root):
+            dirs[:] = sorted(d for d in dirs if d != CONFLICTS)
+            for n in sorted(names):
+                path = (Path(folder) / n).relative_to(space.path).as_posix()
+                if n != ".DS_Store" and path not in known:
+                    out.append(path)
+    return out
+
+
 def _rebase(space: Space, res: dict) -> bool:
     """Replay the local commits on top of the remote ones, resolving every conflict by rule."""
     unmerged = lambda: _z(_git(space, "diff", "--name-only", "--diff-filter=U", "-z")[1])
@@ -588,8 +721,8 @@ def _rebase(space: Space, res: dict) -> bool:
     return False
 
 
-def _stage(space: Space, n: int, path: str) -> str | None:
-    code, out, _ = _git(space, "show", f":{n}:{path}")
+def _stage(space: Space, n: int, path: str) -> bytes | None:
+    code, out, _ = _git(space, "show", f":{n}:{path}", raw=True)
     return out if code == 0 else None
 
 
@@ -598,11 +731,11 @@ def _resolve(space: Space, path: str, res: dict) -> None:
     commit being replayed. The remote version stays; the local one is saved as a conflict copy."""
     base, remote, local = (_stage(space, n, path) for n in (1, 2, 3))
     if path == IGNORE and remote is not None and local is not None:
-        _write_text(space.path / path, ignore_text(_merge_lists(base or "", remote, local)))
+        _write_text(space.path / path, ignore_text(_merge_lists(_text(base or b""), _text(remote), _text(local))))
         _must(space, "add", "--", path)
         return
     if remote is not None and local is not None and base is not None and Path(path).name == "STATE.md":
-        merged = _merge_state(base, remote, local)
+        merged = _merge_state(_text(base), _text(remote), _text(local))
         if merged is not None:
             _write_text(space.path / path, merged)
             _must(space, "add", "--", path)
@@ -627,7 +760,7 @@ def _merge_lists(base: str, remote: str, local: str) -> list[str]:
     return sorted((theirs | mine) - (was - theirs) - (was - mine))
 
 
-def _save_copy(space: Space, path: str, text: str) -> str:
+def _save_copy(space: Space, path: str, data: bytes) -> str:
     root = _kb_root(space, path)
     inner = path[len(root) + 1:] if root else path
     p = Path(inner.replace("/", "__"))
@@ -635,7 +768,8 @@ def _save_copy(space: Space, path: str, text: str) -> str:
     dest, n = folder / f"{p.stem}.{_host()}{p.suffix}", 2
     while dest.exists():
         dest, n = folder / f"{p.stem}.{_host()}-{n}{p.suffix}", n + 1
-    _write_text(dest, text)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(data)
     return dest.relative_to(space.path).as_posix()
 
 
@@ -645,7 +779,8 @@ def conflict_files(space: Space) -> list[str]:
     for root in ["", *shared(space)]:
         folder = space.path / root / CONFLICTS
         try:
-            out.extend((folder / n).relative_to(space.path).as_posix() for n in sorted(os.listdir(folder)))
+            out.extend((folder / n).relative_to(space.path).as_posix() for n in sorted(os.listdir(folder))
+                       if not n.startswith("."))
         except OSError:
             continue
     return out
@@ -681,33 +816,37 @@ def _merge_state(base: str, remote: str, local: str) -> str | None:
         names = []
         for label, lines in zip(("base", "remote", "local"), sides):
             names.append(os.path.join(tmp, label))
-            Path(names[-1]).write_text("\n".join(lines), encoding="utf-8", errors="surrogateescape")
+            _write_text(Path(names[-1]), "\n".join(lines))
         try:
             p = subprocess.run(["git", "merge-file", "-p", "--quiet", names[2], names[0], names[1]],
-                               capture_output=True, encoding="utf-8", errors="surrogateescape")
+                               capture_output=True)
         except OSError:
             return None
-    return p.stdout if p.returncode == 0 else None
+    return _text(p.stdout) if p.returncode == 0 else None
 
 
-def repair(space: Space) -> list[str]:
+def repair(space: Space, both: set[str] | frozenset = frozenset()) -> list[str]:
     """Put right what a merge of two devices' decisions can leave behind; returns the files it
-    changed (relative to the space). Decisions the remote already has keep their numbers."""
+    changed (relative to the space). Decisions the remote already has keep their numbers. `both`
+    are the files both devices changed: only a knowledge base whose decisions were merged, or
+    mended here, gets its "Active decisions" line rebuilt, so a hand-kept line survives other merges."""
     changed = []
     for rel in shared(space):
         root = space.path / rel
         name = next((c for c in ("knowledge-base/decisions.md", "decisions.md") if (root / c).is_file()), None)
         if name is None:
             continue
-        text = (root / name).read_text(encoding="utf-8")
+        text = _read_text(root / name)
         code, theirs, _ = _git(space, "show", f"{UPSTREAM}:{rel}/{name}")
         new = repair_decisions(text, theirs if code == 0 else "")
         if new != text:
             _write_text(root / name, new)
             changed.append(f"{rel}/{name}")
+        elif f"{rel}/{name}" not in both:
+            continue
         state = root / "STATE.md"
         if state.is_file():
-            old = state.read_text(encoding="utf-8")
+            old = _read_text(state)
             fresh = refresh_state(old, new)
             if fresh != old:
                 _write_text(state, fresh)
@@ -726,13 +865,42 @@ def _decision_heads(lines: list[str]) -> list[tuple[int, int, str]]:
     return out
 
 
+def _split_fused(lines: list[str]) -> list[str]:
+    """Two decisions recorded apart with the same number, title and day share their first lines, and
+    a union merge folds them into one entry with two sets of bullets. Give the second its own
+    heading and the next free number."""
+    from .recording import _headings
+    for _ in range(50):
+        heads = _decision_heads(lines)
+        breaks = [i for i, level, _ in _headings(lines) if level <= 2]
+        top = max((n for _, n, _ in heads), default=0)
+        for i, n, _ in heads:
+            end = next((j for j in breaks if j > i), len(lines))
+            marks = [k for k in range(i + 1, end) if lines[k].startswith("- **Decision:**")]
+            if len(marks) < 2:
+                continue
+            dates = [k for k in range(i + 1, end) if lines[k].startswith("- **Date:**")]
+            head = [re.sub(rf"\bD-0*{n}\b", f"D-{top + 1:03d}", lines[i], count=1)]
+            at = marks[1]
+            if len(dates) > 1 and dates[1] == at - 1:
+                at -= 1                  # the second entry kept its own date line
+            elif dates:
+                head.append(lines[dates[0]])
+            lines[at:at] = ["", *head] if lines[at - 1].strip() else head
+            break
+        else:
+            break
+    return lines
+
+
 def repair_decisions(text: str, remote_text: str) -> str:
-    """`text` (decisions.md after a merge) with two faults mended:
+    """`text` (decisions.md after a merge) with three faults mended:
+    - two entries a union merge folded into one because their first lines were the same;
     - a heading a union merge left twice because one device marked it superseded: the superseded
       form stays;
     - two different decisions with one number (both devices recorded while apart): the one the
       remote does not have yet takes the next free number."""
-    lines = text.split("\n")
+    lines = _split_fused(text.split("\n"))
     heads = _decision_heads(lines)
     drop = set()
     for (i, n, a), (j, m, b) in zip(heads, heads[1:]):

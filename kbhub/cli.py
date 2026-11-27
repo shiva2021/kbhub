@@ -296,11 +296,14 @@ def _share(a: argparse.Namespace) -> int:
         print(f"Space {space.name}: {space.path} <- {space.remote}")
         print(f"  {done['landed']} file{'' if done['landed'] == 1 else 's'} written; shares: "
               + (", ".join(share.shared(space)) or "nothing yet"))
-        if done["differing"]:
-            print("  PAUSED: these local files differ from the shared ones and were left alone:")
+        if done["differing"] or done["extra"]:
+            print("  PAUSED: nothing of yours was changed or sent.")
             for f in done["differing"]:
-                print(f"    {f}")
-            print("  Move them aside and run `kbhub share sync`, or keep yours with `kbhub share sync --keep-local`.")
+                print(f"    differs from the shared file: {f}")
+            for f in done["extra"]:
+                print(f"    only on this device:          {f}")
+            print("  Move them aside and run `kbhub share sync`, or share them as they are here with "
+                  "`kbhub share sync --keep-local`.")
         from .index import KBIndex
         stats = KBIndex(cfg=done["cfg"], session_dir=Path(os.getcwd())).sync()
         print(f"  indexed: {stats['changed']} file{'' if stats['changed'] == 1 else 's'} changed")

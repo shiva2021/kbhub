@@ -373,11 +373,15 @@ already travels with that project.
 
 ### Joining with notes already on the device
 
-`kbhub share join` writes the files you do not have. If you already have a file with the same
-name and different content, kbhub leaves yours alone, lists it, and pauses the space. Then either:
+`kbhub share join` writes the files you do not have. It never changes or sends a file of yours
+without asking. If a shared folder already exists on the device and holds a file with different
+content, or a file the shared notes do not have, kbhub leaves it alone, lists it, and pauses the
+space. Then either:
 
-- move your file somewhere else and run `kbhub share sync` to take the shared one, or
-- run `kbhub share sync --keep-local` to share your version instead.
+- move those files somewhere else and run `kbhub share sync`, or
+- run `kbhub share sync --keep-local` to share them as they are on this device.
+
+The same happens later if another device starts sharing a folder that this device also has.
 
 ### Good to know
 

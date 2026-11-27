@@ -615,3 +615,194 @@ def test_a_conflict_keeps_the_remote_file_byte_for_byte(pair):
     res = b.sync()
     assert res["ok"] and len(res["saved"]) == 1
     assert (b.kb / "notes/plans/p.md").read_bytes() == b"# From A\r\nwindows line ends\r\n"
+
+
+# ------------------------------------------------------------------ review findings (pull request 6)
+
+def remote_files(dev: Device) -> list[str]:
+    out = subprocess.run(["git", "--git-dir", dev.use().spaces[0].remote, "ls-tree", "-r", "--name-only", "main"],
+                         capture_output=True, text=True, check=True).stdout
+    return out.split()
+
+
+@pytest.fixture
+def trio(pair, make_project):
+    """`pair`, plus a second shared knowledge base `other`."""
+    a, b = pair
+    make_project(a.kb, "other", {"STATE.md": "# other\n"}, kb_toml='name = "other"\n')
+    share.add(a.use(), "other")
+    b.sync()
+    return a, b
+
+
+def test_remove_keeps_local_files_when_the_remote_is_ahead(trio):
+    a, b = trio
+    (b.kb / "other/STATE.md").write_text("# other, edited on B\n")
+    (b.kb / "notes/STATE.md").write_text(state(b) + "B touched notes too.\n")
+    b.sync()
+    (a.kb / "notes/knowledge-base/open-items.md").write_text("# Open items\n- not synced yet\n")
+    before = sorted(f.relative_to(a.kb).as_posix() for f in (a.kb / "notes").rglob("*") if f.is_file())
+
+    res = share.remove(a.use(), "notes")
+    assert res["ok"] and res["pushed"]
+    after = sorted(f.relative_to(a.kb).as_posix() for f in (a.kb / "notes").rglob("*") if f.is_file())
+    assert after == before
+    assert "not synced yet" in (a.kb / "notes/knowledge-base/open-items.md").read_text()
+    assert "B touched notes too." in state(a)             # pulled first, so nothing of B's was lost either
+    assert share.shared(a.use().spaces[0]) == ["other"]
+    assert not [f for f in remote_files(a) if f.startswith("notes/")]
+    assert (a.kb / "other/STATE.md").read_text() == "# other, edited on B\n"
+
+
+def test_a_file_written_in_a_knowledge_base_that_was_just_unshared_is_not_left_tracked(trio):
+    a, b = trio
+    (b.kb / "notes/plans").mkdir(exist_ok=True)
+    (b.kb / "notes/plans/b-new.md").write_text("# written before B knew\n")
+    share.remove(a.use(), "notes")
+    assert b.sync()["ok"]
+    assert not [f for f in remote_files(b) if f.startswith("notes/")]
+    assert not [f for f in b.git("ls-files").split() if f.startswith("notes/")]
+    (b.kb / "notes/plans/b-new.md").write_text("# edited later\n")     # still on B, no longer shared
+    res = b.sync()
+    assert res["ok"] and not res["pushed"]
+
+
+def test_a_failed_remove_changes_nothing_and_can_be_repeated(trio, monkeypatch):
+    a, _ = trio
+    space = a.use().spaces[0]
+    (share.git_dir(space) / "index.lock").write_text("")   # left by a killed hook: cleared, not fatal
+    real = share._git
+
+    def failing(space_, *args, **kw):
+        return (1, "", "simulated failure") if args[:2] == ("rm", "-r") else real(space_, *args, **kw)
+
+    monkeypatch.setattr(share, "_git", failing)
+    with pytest.raises(ValueError, match="simulated failure"):
+        share.remove(a.use(), "notes")
+    assert share.shared(space) == ["notes", "other"] and "notes/STATE.md" in a.git("ls-files").split()
+    monkeypatch.setattr(share, "_git", real)
+    assert a.sync()["ok"]
+    assert share.remove(a.use(), "notes")["pushed"] and share.shared(space) == ["other"]
+
+
+def test_remove_refuses_while_the_space_is_out_of_step(trio, monkeypatch):
+    a, _ = trio
+    real = share._git
+    monkeypatch.setattr(share, "_git", lambda space, *args, **kw: (
+        (124, "", "timed out") if args[0] == "fetch" else real(space, *args, **kw)))
+    with pytest.raises(ValueError, match="still shared"):
+        share.remove(a.use(), "notes")
+    assert share.shared(a.use().spaces[0]) == ["notes", "other"]
+
+
+def test_local_files_in_a_folder_another_device_starts_sharing_are_not_sent_unasked(pair, make_project):
+    a, b = pair
+    make_project(a.kb, "extra", {"STATE.md": "# extra\n"}, kb_toml='name = "extra"\n')
+    (b.kb / "extra").mkdir()
+    (b.kb / "extra/private-diary.md").write_text("dear diary\n")
+    share.add(a.use(), "extra")
+
+    res = b.sync()
+    assert res["pending"] == "pull" and "extra/private-diary.md" in res["notes"][0]
+    assert "extra/private-diary.md" not in remote_files(b)
+    assert not (b.kb / "extra/STATE.md").exists()
+
+    assert b.sync(keep_local=True)["pushed"]              # the owner says so: now it is shared
+    assert "extra/private-diary.md" in remote_files(b) and (b.kb / "extra/STATE.md").is_file()
+
+
+def test_join_pauses_on_local_files_the_shared_notes_do_not_have(a, b, remote):
+    cfg = a.use()
+    new_project(cfg, "notes")
+    cfg, _ = share.init(cfg, remote=remote)
+    share.add(cfg, "notes")
+    (b.kb / "notes").mkdir()
+    (b.kb / "notes/own.md").write_text("only on B\n")
+    done = share.join(b.use(), remote)
+    assert done["extra"] == ["notes/own.md"] and not done["differing"]
+    assert b.sync()["pending"] == "paused" and "notes/own.md" not in remote_files(b)
+    (b.kb / "notes/own.md").rename(b.kb / "own-aside.md")
+    res = b.sync()
+    assert res["ok"] and not res["pending"] and "notes/own.md" not in remote_files(b)
+
+
+def test_the_users_own_ssh_command_is_left_alone(tmp_path, monkeypatch):
+    config = tmp_path / "gitconfig"
+    config.write_text("[core]\n\tsshCommand = ssh -i ~/.ssh/id_personal\n")
+    share._own_ssh.clear()
+    env = {"GIT_CONFIG_GLOBAL": str(config), "HOME": str(tmp_path), "PATH": __import__("os").environ["PATH"]}
+    share._quiet_ssh(env)
+    assert "GIT_SSH_COMMAND" not in env
+    env = {"GIT_CONFIG_GLOBAL": str(tmp_path / "none"), "HOME": str(tmp_path / "x"),
+           "PATH": __import__("os").environ["PATH"], "GIT_CONFIG_NOSYSTEM": "1"}
+    share._quiet_ssh(env)
+    assert "BatchMode=yes" in env["GIT_SSH_COMMAND"]
+    env = {"GIT_SSH_COMMAND": "ssh -v"}
+    share._quiet_ssh(env)
+    assert env["GIT_SSH_COMMAND"] == "ssh -v"
+
+
+def test_a_sync_interrupted_after_the_merge_still_renumbers_next_time(pair, monkeypatch):
+    a, b = pair
+    a.record("notes", "decision", "From A", why="A.")
+    b.record("notes", "decision", "From B", why="B.")
+    a.sync()
+    real = share.repair
+
+    def killed(*args, **kw):
+        raise RuntimeError("hook killed at its timeout")
+
+    monkeypatch.setattr(share, "repair", killed)
+    res = b.sync()
+    assert not res["ok"] and not res["pushed"]
+    assert decisions(b).count("## D-001: From") == 2       # merged, not mended yet, and not pushed
+
+    monkeypatch.setattr(share, "repair", real)
+    res = b.sync()
+    assert res["ok"] and res["pushed"]
+    assert "## D-001: From A" in decisions(b) and "## D-002: From B" in decisions(b)
+    assert "D-001, D-002. See" in state(b)
+
+
+def test_two_decisions_with_the_same_title_stay_two_entries(pair):
+    a, b = pair
+    a.record("notes", "decision", "Use Postgres", body="A body.", why="A reason.")
+    b.record("notes", "decision", "Use Postgres", body="B body.", why="B reason.")
+    a.sync()
+    assert b.sync()["ok"]
+    text = decisions(b)
+    assert "## D-001: Use Postgres" in text and "## D-002: Use Postgres" in text
+    first, second = text.split("## D-002: Use Postgres")
+    assert first.count("- **Decision:**") == 2 and second.count("- **Decision:**") == 1   # template + one, then one
+    assert second.count("- **Date:** 2026-11-27") == 1 and "D-001, D-002. See" in state(b)
+
+
+def test_a_hand_kept_active_decisions_line_survives_an_unrelated_merge(trio):
+    a, b = trio
+    a.record("notes", "decision", "One", why="w")
+    a.record("notes", "decision", "Two", why="w")
+    (a.kb / "notes/STATE.md").write_text(state(a).replace("D-001, D-002. See", "D-002. See"))   # trimmed by hand
+    a.sync(), b.sync()
+    (a.kb / "other/STATE.md").write_text("# other, from A\n")
+    (b.kb / "other/a-new-file.md").write_text("# from B\n")
+    b.sync()
+    assert a.sync()["ok"]
+    assert "\nD-002. See" in state(a)
+
+
+def test_a_ds_store_in_the_conflicts_folder_is_not_a_conflict(pair):
+    a, _ = pair
+    (a.kb / "notes/.kbhub-conflicts").mkdir()
+    (a.kb / "notes/.kbhub-conflicts/.DS_Store").write_text("finder")
+    res = a.sync()
+    assert res["conflicts"] == [] and share.describe(res, quiet=True) == ""
+
+
+def test_a_conflict_copy_is_the_local_file_byte_for_byte(pair):
+    a, b = pair
+    (a.kb / "notes/plans").mkdir(exist_ok=True), (b.kb / "notes/plans").mkdir(exist_ok=True)
+    (a.kb / "notes/plans/p.md").write_bytes(b"# From A\n")
+    (b.kb / "notes/plans/p.md").write_bytes(b"# From B\r\nwindows\r\n\xff\xfe")
+    a.sync()
+    res = b.sync()
+    assert (b.kb / res["saved"][0]).read_bytes() == b"# From B\r\nwindows\r\n\xff\xfe"
