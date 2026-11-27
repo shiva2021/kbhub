@@ -950,3 +950,63 @@ def test_record_tool_reports_the_number_a_decision_ended_up_with(pair, monkeypat
     monkeypatch.setattr(share, "sync_space", first_sync_skipped)
     out = server.record("notes", "decision", "From B", "Body.", why="B.")
     assert "Recorded D-001" in out and "this decision is now D-002: refer to it as D-002." in out
+
+
+# ------------------------------------------------------------------ a repository created with a README
+
+def seeded_remote(tmp_path, files: dict) -> str:
+    """A remote as a host creates it when asked to add a README: one commit on main."""
+    bare, work = tmp_path / "seeded.git", tmp_path / "seed-work"
+    subprocess.run(["git", "init", "--quiet", "--bare", str(bare)], check=True)
+    subprocess.run(["git", "init", "--quiet", str(work)], check=True)
+    for rel, text in files.items():
+        (work / rel).parent.mkdir(parents=True, exist_ok=True)
+        (work / rel).write_text(text)
+    git = ["git", "-C", str(work), "-c", "user.name=host", "-c", "user.email=host@example.com"]
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "--quiet", "-m", "Initial commit"], check=True)
+    subprocess.run([*git, "push", "--quiet", str(bare), "HEAD:refs/heads/main"], check=True)
+    return str(bare)
+
+
+def test_init_on_a_repository_created_with_a_readme(a, b, tmp_path):
+    remote = seeded_remote(tmp_path, {"README.md": "# kbhub-knowledge-base\n"})
+    cfg = a.use()
+    new_project(cfg, "notes")
+    cfg, space = share.init(cfg, remote=remote)
+    assert (a.kb / "README.md").read_text() == "# kbhub-knowledge-base\n"      # kept, and written here
+    assert share.shared(space) == []
+    assert share.add(cfg, "notes")["pushed"]
+    assert sorted(set(f.split("/")[0] for f in remote_files(a))) == [".gitattributes", ".gitignore", "README.md", "notes"]
+
+    done = share.join(b.use(), remote)                    # the second device joins as usual
+    assert not done["differing"] and not done["extra"] and (b.kb / "README.md").is_file()
+    a.record("notes", "decision", "From A", why="A.")
+    b.record("notes", "decision", "From B", why="B.")
+    a.sync()
+    assert b.sync()["pushed"] and "README.md" in remote_files(b)     # the tidy after a merge leaves it too
+    (a.kb / "README.md").write_text("# My notes\n")       # and it can be edited like any file
+    assert a.sync()["pushed"]
+
+
+def test_init_still_points_at_join_for_a_real_space(pair, tmp_path):
+    a, _ = pair
+    with pytest.raises(ValueError, match="already holds notes: use `kbhub share join"):
+        share.init(a.use(), name="second", path=tmp_path / "elsewhere", remote=a.use().spaces[0].remote)
+    assert not (a.config / "spaces/second.git").exists()
+
+
+def test_init_refuses_a_repository_that_holds_something_else(a, tmp_path):
+    remote = seeded_remote(tmp_path, {"README.md": "# code\n", "src/main.py": "print(1)\n"})
+    with pytest.raises(ValueError, match="is not empty and is not a kbhub space \\(it holds src/main.py\\)"):
+        share.init(a.use(), remote=remote)
+    assert not (a.config / "spaces/personal.git").exists() and not a.use().spaces
+    assert not (a.kb / "README.md").exists() and not (a.kb / ".gitignore").exists()
+
+
+def test_init_does_not_replace_a_readme_already_in_the_folder(a, tmp_path):
+    remote = seeded_remote(tmp_path, {"README.md": "# from the host\n"})
+    (a.kb / "README.md").write_text("# mine\n")
+    with pytest.raises(ValueError, match="move yours aside first"):
+        share.init(a.use(), remote=remote)
+    assert (a.kb / "README.md").read_text() == "# mine\n"
