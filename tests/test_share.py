@@ -806,3 +806,34 @@ def test_a_conflict_copy_is_the_local_file_byte_for_byte(pair):
     a.sync()
     res = b.sync()
     assert (b.kb / res["saved"][0]).read_bytes() == b"# From B\r\nwindows\r\n\xff\xfe"
+
+
+# ------------------------------------------------------------------ second review
+
+def test_remove_keeps_what_another_device_shared_in_the_meantime(trio, make_project):
+    a, b = trio
+    make_project(b.kb, "beta", {"STATE.md": "# beta\n"}, kb_toml='name = "beta"\n')
+    share.add(b.use(), "beta")
+    share.remove(a.use(), "notes")                        # A had not seen beta yet
+    assert share.shared(a.use().spaces[0]) == ["beta", "other"]
+    assert b.sync()["ok"]
+    assert (b.kb / "beta/STATE.md").read_text() == "# beta\n" and "beta/STATE.md" in remote_files(b)
+    assert share.shared(b.use().spaces[0]) == ["beta", "other"]
+
+
+def test_an_ignore_file_that_lost_a_line_never_removes_a_knowledge_base_for_everyone(trio):
+    a, b = trio
+    ignore = a.kb / ".gitignore"
+    ignore.write_text(share.ignore_text(["other"]))        # an older copy restored, or a hand edit
+    (a.kb / "notes/STATE.md").write_text(state(a) + "edited\n")
+    res = a.sync()
+    assert not res["ok"] and "refused to share files outside" in res["notes"][-1]
+    assert "notes/STATE.md" in remote_files(a) and "notes/STATE.md" in a.git("ls-files").split()
+    b.sync()
+    assert (b.kb / "notes/STATE.md").is_file()
+
+
+def test_a_sub_heading_that_looks_like_a_decision_is_left_alone():
+    remote = "# Decisions\n\n## D-001: Theirs\n- a\n"
+    merged = "# Decisions\n\n## D-001: Theirs\n- a\n\n## D-002: Mine\n- b\n### D-001 follow-up notes\n- c\n"
+    assert share.repair_decisions(merged, remote) == merged

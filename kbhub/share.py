@@ -163,7 +163,6 @@ def _commit(space: Space, message: str) -> bool:
     Second guard, whatever the ignore file says: a file outside the shared folders is never
     committed."""
     _guard_ignore(space)
-    _untrack_outside(space)
     _must(space, "add", "-A")
     allowed = shared(space)
     staged = _z(_must(space, "diff", "--cached", "--name-only", "--diff-filter=d", "-z"))
@@ -490,6 +489,9 @@ def _remove(space: Space, rel: str, current: list[str], net_timeout: float) -> d
         if before["pending"]:
             raise ValueError(f"{rel} is still shared: the space must be in step with the remote first ("
                              + "; ".join(before["notes"]) + "). Run `kbhub share sync` and try again.")
+        current = shared(space)          # the sync may have brought in what another device just shared
+        if rel not in current:
+            raise ValueError(f"{rel} is no longer shared: another device already stopped sharing it")
         old_ignore = _read_text(space.path / IGNORE)
         with tempfile.TemporaryDirectory(dir=git_dir(space).parent) as tmp:
             keep = Path(tmp) / "copy"
@@ -647,6 +649,10 @@ def _sync(space: Space, res: dict, net_timeout: float, keep_local: bool, message
             except ValueError:
                 both = set()
             repair(space, both)
+        # Only here, after a merge: a local commit replayed on top of another device's removal can
+        # bring a file back. An ignore file that merely lost a line on this device must never
+        # turn into a removal for everyone, so an ordinary commit refuses instead (see _commit).
+        _untrack_outside(space)
         _commit(space, "kbhub: tidy after merge")
         marker.unlink(missing_ok=True)
     if not upstream or _count(space, f"{UPSTREAM}..HEAD"):
@@ -858,8 +864,8 @@ def _decision_heads(lines: list[str]) -> list[tuple[int, int, str]]:
     """(line index, number, title) of each recorded decision heading."""
     from .recording import DECISION_RE, PLACEHOLDER, _headings
     out = []
-    for i, _, title in _headings(lines):
-        m = DECISION_RE.match(title)
+    for i, level, title in _headings(lines):
+        m = DECISION_RE.match(title) if level == 2 else None      # `### D-003 notes` is not a decision
         if m and m.group(2).lstrip(": ").strip() != PLACEHOLDER:
             out.append((i, int(m.group(1)), title))
     return out
