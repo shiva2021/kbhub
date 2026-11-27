@@ -307,10 +307,13 @@ def uninstall(claude_home: Path, kb_home: Path, run_claude: bool = True, bin_dir
         entries = hooks.get(event) if isinstance(hooks, dict) else None
         if not isinstance(entries, list):
             continue
-        hooks[event] = _without_hooks(entries, ours)
-        if not hooks[event]:
+        kept = _without_hooks(entries, ours)
+        if kept == entries:
+            continue                     # none of ours here: leave it exactly as it is
+        hooks[event] = kept
+        if not kept:
             del hooks[event]
-    if isinstance(hooks, dict) and not hooks:
+    if settings != original and isinstance(hooks, dict) and not hooks:
         del settings["hooks"]
     if settings != original:
         _save_settings(path, settings, original)

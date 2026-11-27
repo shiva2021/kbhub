@@ -198,3 +198,11 @@ def test_session_end_hook_installed_once_and_removed(claude_home, kb_home):
     uninstall(claude_home, kb_home, run_claude=False)
     settings = json.loads((claude_home / "settings.json").read_text())
     assert settings == {"hooks": {"SessionEnd": [{"hooks": [{"type": "command", "command": "echo bye"}]}]}}
+
+
+def test_uninstall_leaves_settings_without_our_hooks_untouched(claude_home, kb_home):
+    original = {"hooks": {"SessionStart": []}, "model": "x"}
+    (claude_home / "settings.json").write_text(json.dumps(original))
+    log = uninstall(claude_home, kb_home, run_claude=False)
+    assert json.loads((claude_home / "settings.json").read_text()) == original
+    assert not [line for line in log if line.startswith("hook:")]

@@ -837,3 +837,116 @@ def test_a_sub_heading_that_looks_like_a_decision_is_left_alone():
     remote = "# Decisions\n\n## D-001: Theirs\n- a\n"
     merged = "# Decisions\n\n## D-001: Theirs\n- a\n\n## D-002: Mine\n- b\n### D-001 follow-up notes\n- c\n"
     assert share.repair_decisions(merged, remote) == merged
+
+
+# ------------------------------------------------------------------ third review
+
+def test_both_devices_supersede_the_same_decision():
+    remote = ("# Decisions\n\n## D-001: first (superseded 2026-11-27, see D-002)\n- a\n\n## D-002: a2\n- b\n"
+              "- **Supersedes:** D-001\n")
+    merged = ("# Decisions\n\n## D-001: first (superseded 2026-11-27, see D-002)\n"
+              "## D-001: first (superseded 2026-11-28, see D-002)\n- a\n\n## D-002: a2\n- b\n"
+              "- **Supersedes:** D-001\n\n## D-002: b2\n- c\n- **Supersedes:** D-001\n")
+    fixed = share.repair_decisions(merged, remote)
+    heads = [line for line in fixed.splitlines() if line.startswith("## ")]
+    assert heads == ["## D-001: first (superseded 2026-11-27, see D-002)", "## D-002: a2", "## D-003: b2"]
+
+
+def test_renumbering_follows_the_supersedes_bullet():
+    remote = "# Decisions\n\n## D-001: remote one\n- a\n"
+    merged = ("# Decisions\n\n## D-001: remote one\n- a\n\n## D-001: local one (superseded 2026-11-27, see D-002)\n"
+              "- b\n\n## D-002: local two\n- c\n- **Supersedes:** D-001\n")
+    fixed = share.repair_decisions(merged, remote)
+    assert "## D-003: local one (superseded 2026-11-27, see D-002)" in fixed
+    assert fixed.rstrip().endswith("## D-002: local two\n- c\n- **Supersedes:** D-003")
+
+
+def test_edits_made_after_an_interrupted_rebase_are_kept(pair, monkeypatch):
+    a, b = pair
+    monkeypatch.setattr(share, "_host", lambda: "laptop-b")
+    a.record("notes", "lesson", "From A")
+    a.sync()
+    b.record("notes", "lesson", "From B")
+    space = b.use().spaces[0]
+    share._commit(space, "local")
+    share._git(space, "fetch", "--quiet", "origin")
+    share._git(space, "rebase", "--exec", "false", share.UPSTREAM)     # a sync killed mid-rebase
+    assert share._rebasing(space)
+    lessons = b.kb / "notes/knowledge-base/lessons.md"
+    lessons.write_text(lessons.read_text() + "\n## 2026-11-27: Written by another session\nKeep me.\n")
+
+    res = b.sync()
+    assert res["ok"] and not share._rebasing(space)
+    copies = [c for c in res["conflicts"] if "lessons" in c]
+    assert len(copies) == 1 and "Keep me." in (b.kb / copies[0]).read_text()
+    assert "From A" in lessons.read_text() and "From B" in lessons.read_text()
+
+
+def test_remove_works_when_the_folder_is_gone(trio):
+    a, b = trio
+    (a.kb / "notes").rename(a.kb / "notes-renamed")
+    res = share.remove(a.use(), "notes")
+    assert res["ok"] and share.shared(a.use().spaces[0]) == ["other"]
+    assert not (a.kb / "notes").exists() and (a.kb / "notes-renamed/STATE.md").is_file()
+
+
+def test_init_never_inherits_an_old_list(a, remote, tmp_path):
+    cfg = a.use()
+    new_project(cfg, "notes")
+    cfg, space = share.init(cfg, remote=remote)
+    share.add(cfg, "notes")
+    __import__("shutil").rmtree(share.git_dir(space))     # starting over, as the error message suggests
+    text = (a.home / "config.toml").read_text()
+    (a.home / "config.toml").write_text(text[:text.index("[[spaces]]")])
+    other = tmp_path / "new-remote.git"
+    subprocess.run(["git", "init", "--quiet", "--bare", str(other)], check=True)
+    cfg, space = share.init(a.use(), remote=str(other))
+    assert share.shared(space) == [] and a.git("ls-files").split() == [".gitattributes", ".gitignore"]
+
+
+def test_a_conflict_copy_of_a_dotfile_is_reported(pair):
+    a, b = pair
+    (a.kb / "notes/.kb.toml").write_text((a.kb / "notes/.kb.toml").read_text() + "# from A\n")
+    (b.kb / "notes/.kb.toml").write_text((b.kb / "notes/.kb.toml").read_text() + "# from B\n")
+    a.sync()
+    res = b.sync()
+    assert len(res["saved"]) == 1 and res["conflicts"] == res["saved"]
+
+
+def test_a_real_state_conflict_does_not_drop_a_new_decision_from_the_list(pair):
+    a, b = pair
+    (a.kb / "notes/STATE.md").write_text(state(a).replace("Nothing started yet.", "A's status."))
+    a.sync()
+    (b.kb / "notes/STATE.md").write_text(state(b).replace("Nothing started yet.", "B's status."))
+    b.record("notes", "decision", "From B", why="B.")
+    res = b.sync()
+    assert res["ok"] and len(res["saved"]) == 1
+    assert "A's status." in state(b) and "D-001. See" in state(b)
+
+
+def test_status_shows_the_remote_git_really_uses(pair):
+    a, _ = pair
+    text = (a.home / "config.toml").read_text()
+    (a.home / "config.toml").write_text("\n".join(l for l in text.splitlines() if not l.startswith("remote")) + "\n")
+    cfg = a.use()
+    assert cfg.spaces[0].remote is None
+    assert share.status(cfg)[0]["remote"] == share._git(cfg.spaces[0], "remote", "get-url", "origin")[1].strip()
+
+
+def test_record_tool_reports_the_number_a_decision_ended_up_with(pair, monkeypatch):
+    from kbhub import server
+    from kbhub.index import KBIndex
+    a, b = pair
+    a.record("notes", "decision", "From A", why="A.")
+    a.sync()
+    b.use()
+    monkeypatch.setattr(server, "_index", KBIndex(cfg=b.use(), session_dir=b.kb))
+    real, calls = share.sync_space, []
+
+    def first_sync_skipped(space, *args, **kw):           # as when another session holds the lock
+        calls.append(1)
+        return {**share._result(space), "skipped": True} if len(calls) == 1 else real(space, *args, **kw)
+
+    monkeypatch.setattr(share, "sync_space", first_sync_skipped)
+    out = server.record("notes", "decision", "From B", "Body.", why="B.")
+    assert "Recorded D-001" in out and "this decision is now D-002: refer to it as D-002." in out

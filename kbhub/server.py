@@ -346,7 +346,22 @@ def record(project: str, kind: str, title: str, body: str, why: str | None = Non
         idx._last_sync = 0.0
     if space is not None:
         parts.append(share.describe(share.sync_space(space, SHARE_TIMEOUT)))
+        now = _decision_id(proj.path / done["path"], title) if done["id"] else None
+        if now and now != done["id"]:
+            parts.append(f"Another device had already used {done['id']}, so this decision is now {now}: "
+                         f"refer to it as {now}.")
     return " ".join(parts)
+
+
+def _decision_id(path: Path, title: str) -> str | None:
+    """The id a just-recorded decision carries now (merging with another device can renumber it)."""
+    import re
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    ids = re.findall(rf"(?m)^## (D-\d+): {re.escape(title.strip())}[ \t]*$", text)
+    return ids[-1] if ids else None
 
 
 def main() -> None:

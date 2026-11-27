@@ -360,7 +360,7 @@ def init(cfg: GlobalConfig, name: str = "personal", path=None, remote: str | Non
     if remote and _remote_has_notes(space, remote):
         raise ValueError(f"{remote} already holds notes: use `kbhub share join {remote}` on this device")
     _create_repo(space)
-    _write_text(ignore, ignore_text(shared(space)))
+    _write_text(ignore, ignore_text([]))     # a new space shares nothing, whatever an old file listed
     _write_text(space.path / ATTRS, ATTRS_TEXT)
     _commit(space, f"kbhub: start space {name}")
     return _save_spaces(cfg, [*cfg.spaces, space]), space
@@ -495,7 +495,9 @@ def _remove(space: Space, rel: str, current: list[str], net_timeout: float) -> d
         old_ignore = _read_text(space.path / IGNORE)
         with tempfile.TemporaryDirectory(dir=git_dir(space).parent) as tmp:
             keep = Path(tmp) / "copy"
-            shutil.copytree(space.path / rel, keep, symlinks=True)
+            here = (space.path / rel).is_dir()     # renamed or deleted: still stop sharing the name
+            if here:
+                shutil.copytree(space.path / rel, keep, symlinks=True)
             try:
                 _must(space, "rm", "-r", "--cached", "--quiet", "--ignore-unmatch", "--", rel)
                 _write_text(space.path / IGNORE, ignore_text([r for r in current if r != rel]))
@@ -506,7 +508,8 @@ def _remove(space: Space, rel: str, current: list[str], net_timeout: float) -> d
                     _git(space, "reset", "--quiet")
                 raise
             finally:        # git may delete or replace the files while replaying; they stay, as they were
-                shutil.copytree(keep, space.path / rel, symlinks=True, dirs_exist_ok=True)
+                if here:
+                    shutil.copytree(keep, space.path / rel, symlinks=True, dirs_exist_ok=True)
     res["conflicts"] = conflict_files(space)
     return res
 
@@ -590,6 +593,12 @@ def _sync(space: Space, res: dict, net_timeout: float, keep_local: bool, message
     (git_dir(space) / "index.lock").unlink(missing_ok=True)   # we hold the space lock: a leftover is stale
     marker = git_dir(space) / "kbhub-repair"     # a merge of both sides still has to be tidied
     if _rebasing(space):                 # left behind by an interrupted run
+        # Aborting resets tracked files, so whatever was edited since is saved first.
+        for path in _z(_git(space, "diff", "--name-only", "--diff-filter=M", "-z")[1]):
+            try:
+                res["saved"].append(_save_copy(space, path, (space.path / path).read_bytes()))
+            except OSError:
+                pass
         _abort_rebase(space)
         marker.unlink(missing_ok=True)
     paused = _paused_file(space)
@@ -632,7 +641,8 @@ def _sync(space: Space, res: dict, net_timeout: float, keep_local: bool, message
             return
         if mine:                         # written before the rebase, so an interrupted run still tidies
             local = set(_z(_must(space, "diff", "--name-only", "-z", f"{UPSTREAM}...HEAD")))
-            _write_text(marker, json.dumps(sorted(local & set(incoming))))
+            _write_text(marker, json.dumps({"both": sorted(local & set(incoming)),
+                                            "either": sorted(local | set(incoming))}))
         if not _rebase(space, res):
             marker.unlink(missing_ok=True)
             res["pending"] = "pull"
@@ -645,10 +655,11 @@ def _sync(space: Space, res: dict, net_timeout: float, keep_local: bool, message
             _write_text(space.path / IGNORE, tidy)
         if marker.exists():
             try:
-                both = set(json.loads(marker.read_text(encoding="utf-8") or "[]"))
-            except ValueError:
-                both = set()
-            repair(space, both)
+                touched = json.loads(marker.read_text(encoding="utf-8") or "{}")
+                both, either = set(touched["both"]), set(touched["either"])
+            except (ValueError, KeyError, TypeError):
+                both, either = set(), set()
+            repair(space, both, either)
         # Only here, after a merge: a local commit replayed on top of another device's removal can
         # bring a file back. An ignore file that merely lost a line on this device must never
         # turn into a removal for everyone, so an ordinary commit refuses instead (see _commit).
@@ -786,7 +797,7 @@ def conflict_files(space: Space) -> list[str]:
         folder = space.path / root / CONFLICTS
         try:
             out.extend((folder / n).relative_to(space.path).as_posix() for n in sorted(os.listdir(folder))
-                       if not n.startswith("."))
+                       if n != ".DS_Store")
         except OSError:
             continue
     return out
@@ -831,11 +842,13 @@ def _merge_state(base: str, remote: str, local: str) -> str | None:
     return _text(p.stdout) if p.returncode == 0 else None
 
 
-def repair(space: Space, both: set[str] | frozenset = frozenset()) -> list[str]:
+def repair(space: Space, both: set[str] | frozenset = frozenset(),
+           either: set[str] | frozenset = frozenset()) -> list[str]:
     """Put right what a merge of two devices' decisions can leave behind; returns the files it
     changed (relative to the space). Decisions the remote already has keep their numbers. `both`
-    are the files both devices changed: only a knowledge base whose decisions were merged, or
-    mended here, gets its "Active decisions" line rebuilt, so a hand-kept line survives other merges."""
+    are the files both devices changed and `either` those one of them did. The "Active decisions"
+    line is rebuilt only where it can have gone wrong: decisions.md was mended here or merged, or
+    STATE.md itself was merged while one device added decisions. A hand-kept line survives the rest."""
     changed = []
     for rel in shared(space):
         root = space.path / rel
@@ -848,7 +861,7 @@ def repair(space: Space, both: set[str] | frozenset = frozenset()) -> list[str]:
         if new != text:
             _write_text(root / name, new)
             changed.append(f"{rel}/{name}")
-        elif f"{rel}/{name}" not in both:
+        elif f"{rel}/{name}" not in both and not (f"{rel}/STATE.md" in both and f"{rel}/{name}" in either):
             continue
         state = root / "STATE.md"
         if state.is_file():
@@ -908,6 +921,7 @@ def repair_decisions(text: str, remote_text: str) -> str:
       remote does not have yet takes the next free number."""
     lines = _split_fused(text.split("\n"))
     heads = _decision_heads(lines)
+    theirs = {line.strip() for line in remote_text.split("\n")}
     drop = set()
     for (i, n, a), (j, m, b) in zip(heads, heads[1:]):
         if n != m or any(lines[k].strip() for k in range(i + 1, j)):
@@ -917,11 +931,12 @@ def repair_decisions(text: str, remote_text: str) -> str:
             drop.add(j if dead_a else i)
         elif a == b:
             drop.add(j)
+        elif dead_a and dead_b:          # both devices superseded it: one decision, the remote's mark stays
+            drop.add(i if lines[j].strip() in theirs and lines[i].strip() not in theirs else j)
     if drop:
         lines = [line for k, line in enumerate(lines) if k not in drop]
         heads = _decision_heads(lines)
 
-    theirs = {line.strip() for line in remote_text.split("\n")}
     by_number: dict[int, list[int]] = {}
     for i, n, _ in heads:
         by_number.setdefault(n, []).append(i)
@@ -940,6 +955,13 @@ def repair_decisions(text: str, remote_text: str) -> str:
             for k, _, title in heads:    # a decision this one superseded points at its old number
                 if lines[k].strip() not in theirs and lines[k].rstrip().endswith(f"see {old})"):
                     lines[k] = lines[k].rstrip()[:-len(f"see {old})")] + f"see {new})"
+            by = re.search(r"see D-0*(\d+)\)\s*$", lines[i])     # and the local decision that replaced it
+            for k, number, _ in heads if by else ():
+                if number == int(by.group(1)) and lines[k].strip() not in theirs:
+                    end = next((h for h, _, _ in heads if h > k), len(lines))
+                    for q in range(k + 1, end):
+                        if lines[q].strip() == f"- **Supersedes:** {old}":
+                            lines[q] = lines[q].replace(old, new)
     return "\n".join(lines)
 
 
@@ -998,6 +1020,8 @@ def status(cfg: GlobalConfig) -> list[dict]:
         info = {"name": space.name, "path": str(space.path), "remote": space.remote, "ready": ready,
                 "shared": shared(space), "ahead": 0, "behind": 0, "changes": 0, "paused": [], "conflicts": []}
         if ready:
+            code, url, _ = _git(space, "remote", "get-url", "origin")
+            info["remote"] = url.strip() if code == 0 and url.strip() else None     # what a sync really uses
             if _has_ref(space, UPSTREAM):
                 info["ahead"] = _count(space, f"{UPSTREAM}..HEAD")
                 info["behind"] = _count(space, f"HEAD..{UPSTREAM}")
