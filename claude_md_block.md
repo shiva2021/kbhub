@@ -19,4 +19,6 @@ asked), all indexed by the `kbhub` MCP server.
 - Add decisions, lessons and handovers with `record(project, kind, title, body)`; write other
   knowledge as markdown in the knowledge base. Keep its `STATE.md` current, following the `kbhub`
   skill.
+- Shared knowledge bases sync with the user's other devices by themselves: never run git in a
+  knowledge-base folder. Reconcile any `.kbhub-conflicts/` copy the session start reports.
 <!-- kbhub:end -->

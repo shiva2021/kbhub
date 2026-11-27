@@ -14,7 +14,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from . import manage, recording
+from . import manage, recording, share
 from .format import format_hits
 from .index import KBIndex, log
 
@@ -22,6 +22,8 @@ from .index import KBIndex, log
 # with `uv run --project`, which does not change folder); it decides the default search scope and
 # where create_kb puts a new knowledge base.
 SESSION_DIR = Path(os.environ.get("KBHUB_SESSION_DIR") or os.getcwd())
+
+SHARE_TIMEOUT = 8        # seconds each network step of a shared-space sync may take in a tool call
 
 INSTRUCTIONS = """\
 Central index of every knowledge base on this machine: folders of markdown (decisions, lessons,
@@ -60,6 +62,11 @@ Creating and updating knowledge:
 - Mark whole files or folders superseded or background with add_rule; a single section by putting
   "superseded" in its heading.
 - Never create a .kb.toml inside a git repo.
+- Some knowledge bases are shared with the user's other devices through git (`kbhub share status`
+  lists them). kbhub pulls at session start and pushes after record and at session end, so write
+  notes as usual and never run git in a knowledge-base folder. When the session start or a tool
+  reports conflict copies under .kbhub-conflicts/, compare each with the current file, merge what is
+  missing, then delete the copy.
 """
 
 mcp = FastMCP("kbhub", instructions=INSTRUCTIONS)
@@ -315,6 +322,9 @@ def record(project: str, kind: str, title: str, body: str, why: str | None = Non
     """
     idx = index()
     proj = idx._resolve_project(project)
+    space = share.space_of(idx.cfg, proj.path)
+    if space is not None:   # other devices' entries first, so a decision takes the next free number
+        share.sync_space(space, SHARE_TIMEOUT)
     done = recording.record(idx.cfg, proj, kind, title, body, why, decided_by, supersedes)
     what = done["id"] or f"the {kind}"
     parts = [f"Recorded {what} in {proj.name} · {done['path']}:{done['lines']}."]
@@ -334,6 +344,8 @@ def record(project: str, kind: str, title: str, body: str, why: str | None = Non
         parts.append(f"It will be searchable after the next sync (sync failed just now: {exc}).")
     finally:
         idx._last_sync = 0.0
+    if space is not None:
+        parts.append(share.describe(share.sync_space(space, SHARE_TIMEOUT)))
     return " ".join(parts)
 
 

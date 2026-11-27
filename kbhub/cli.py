@@ -14,6 +14,7 @@
     kbhub add-project PATH [--name N]       (folders outside git repos, with a .kb.toml)
     kbhub new-project NAME [--parent DIR]
     kbhub eval [PROJECT]
+    kbhub share init|add|remove|join|sync|status   share knowledge bases with your other devices (git)
     kbhub cowork-skill [--out ZIP]          package the Cowork skill for upload to claude.ai
     kbhub setup | doctor | update | uninstall   install, check, upgrade, remove
 
@@ -101,6 +102,29 @@ def _parser() -> argparse.ArgumentParser:
     p = sub.add_parser("new-project", help="create a new knowledge base with the standard layout")
     p.add_argument("name")
     p.add_argument("--parent")
+    p = sub.add_parser("share", help="share knowledge bases with your other devices through a private git repository")
+    share = p.add_subparsers(dest="share_cmd", required=True)
+    q = share.add_parser("init", help="start a shared space on this device (shares nothing yet)")
+    q.add_argument("--name", default="personal", help="name of the space (default: personal)")
+    q.add_argument("--path", help="folder of knowledge bases to share from (default: your knowledge-base folder)")
+    q.add_argument("--remote", help="URL of an empty private git repository")
+    q = share.add_parser("add", help="share one knowledge base; shows what will leave this device first")
+    q.add_argument("name", help="knowledge base, as `kbhub projects` lists it")
+    q.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    q = share.add_parser("remove", help="stop sharing a knowledge base (its files stay on this device)")
+    q.add_argument("name")
+    q = share.add_parser("join", help="connect this device to a space that already exists on a remote")
+    q.add_argument("url")
+    q.add_argument("--name", default="personal")
+    q.add_argument("--path", help="folder to put the knowledge bases in (default: your knowledge-base folder)")
+    q = share.add_parser("sync", help="pull and push now")
+    q.add_argument("--space", help="one space only")
+    q.add_argument("--keep-local", action="store_true",
+                   help="after a paused join: share the local versions of the files that differed")
+    share.add_parser("status", help="spaces, what they share, and anything waiting")
+    q = share.add_parser("git", help="run plain git against a space, e.g. `kbhub share git -- log --oneline`")
+    q.add_argument("--space")
+    q.add_argument("args", nargs=argparse.REMAINDER)
     p = sub.add_parser("eval", help="run the [[eval]] retrieval checks from .kb.toml")
     p.add_argument("project", nargs="?")
     return ap
@@ -117,6 +141,9 @@ def _run(a: argparse.Namespace) -> int:
 
     if a.cmd in ("scan", "register", "new-kb", "kb", "rule", "unregister"):
         return _manage(a)
+
+    if a.cmd == "share":
+        return _share(a)
 
     if a.cmd == "cowork-skill":
         from .cowork import package
@@ -230,6 +257,84 @@ def _manage(a: argparse.Namespace) -> int:
         if not manage.unregister(cfg, a.name):
             raise ValueError(f"{a.name!r} is not in the registry")
         print(f"unregistered {a.name} (files untouched)")
+    return 0
+
+
+def _share(a: argparse.Namespace) -> int:
+    from . import share
+    cfg = GlobalConfig.load()
+    cmd = a.share_cmd
+    if cmd == "init":
+        cfg, space = share.init(cfg, a.name, a.path, a.remote)
+        print(f"Space {space.name}: {space.path}" + (f" -> {space.remote}" if space.remote else " (no remote yet)"))
+        print("Nothing is shared yet. Share a knowledge base with: kbhub share add <name>")
+    elif cmd == "add":
+        plan = share.preview_add(cfg, a.name)
+        space, files = plan["space"], plan["files"]
+        print(f"{plan['project'].name} [{plan['scope']}] will be shared in the space {space.name}.")
+        print(f"  from: {plan['project'].path}")
+        print(f"  to:   {space.remote or '(no remote yet: it stays on this device until you add one)'}")
+        print(f"  {len(files)} file{'' if len(files) == 1 else 's'}:")
+        for f in files[:40]:
+            print(f"    {f}")
+        if len(files) > 40:
+            print(f"    ... and {len(files) - 40} more")
+        if not a.yes:
+            if not sys.stdin.isatty():
+                raise ValueError("nothing was shared: run this in a terminal to confirm, or pass --yes")
+            if input("Share these files? [y/N] ").strip().lower() not in ("y", "yes"):
+                print("Nothing was shared.")
+                return 1
+        print(share.describe(share.add(cfg, a.name)))
+    elif cmd == "remove":
+        print(share.describe(share.remove(cfg, a.name)))
+        print(f"{a.name} is no longer shared. Its files stay on this device; other devices drop their copy at "
+              "their next sync.")
+    elif cmd == "join":
+        done = share.join(cfg, a.url, a.name, a.path)
+        space = done["space"]
+        print(f"Space {space.name}: {space.path} <- {space.remote}")
+        print(f"  {done['landed']} file{'' if done['landed'] == 1 else 's'} written; shares: "
+              + (", ".join(share.shared(space)) or "nothing yet"))
+        if done["differing"]:
+            print("  PAUSED: these local files differ from the shared ones and were left alone:")
+            for f in done["differing"]:
+                print(f"    {f}")
+            print("  Move them aside and run `kbhub share sync`, or keep yours with `kbhub share sync --keep-local`.")
+        from .index import KBIndex
+        stats = KBIndex(cfg=done["cfg"], session_dir=Path(os.getcwd())).sync()
+        print(f"  indexed: {stats['changed']} file{'' if stats['changed'] == 1 else 's'} changed")
+    elif cmd == "sync":
+        spaces = [share.find_space(cfg, a.space)] if a.space else cfg.spaces
+        if not spaces:
+            share.find_space(cfg)     # raises with what to do
+        failed = False
+        for space in spaces:
+            res = share.sync_space(space, net_timeout=60, keep_local=a.keep_local)
+            failed = failed or not res["ok"] or bool(res["pending"])
+            print(share.describe(res))
+        return 1 if failed else 0
+    elif cmd == "status":
+        rows = share.status(cfg)
+        if not rows:
+            print("No shared space. Start one with `kbhub share init`, or connect to one with `kbhub share join URL`.")
+        for r in rows:
+            print(f"{r['name']}  {r['path']}  ->  {r['remote'] or '(no remote)'}"
+                  + ("" if r["ready"] else "  NOT SET UP on this device"))
+            for rel in r["shared"]:
+                print(f"  shares  {rel}")
+            if not r["shared"]:
+                print("  shares nothing yet")
+            if r["ready"]:
+                print(f"  {r['changes']} unsaved change(s), {r['ahead']} to push, {r['behind']} to pull "
+                      "(as of the last sync)")
+            for f in r["paused"]:
+                print(f"  PAUSED  local file differs: {f}")
+            for f in r["conflicts"]:
+                print(f"  CONFLICT COPY  {f}")
+    elif cmd == "git":
+        args = a.args[1:] if a.args[:1] == ["--"] else a.args
+        return share.passthrough(share.find_space(cfg, a.space), args)
     return 0
 
 
