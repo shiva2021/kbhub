@@ -330,7 +330,8 @@ search models.
 
 ### Setting it up
 
-1. Create an empty private repository.
+1. Create a new private repository. It can be empty, or hold the README or licence your git host
+   offers to add; kbhub keeps those files and puts a copy in your knowledge-base folder.
 2. On the device that has the notes:
 
    ```

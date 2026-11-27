@@ -166,7 +166,8 @@ def _commit(space: Space, message: str) -> bool:
     _must(space, "add", "-A")
     allowed = shared(space)
     staged = _z(_must(space, "diff", "--cached", "--name-only", "--diff-filter=d", "-z"))
-    outside = [f for f in staged if f not in (IGNORE, ATTRS) and not _inside(f, allowed)]
+    outside = [f for f in staged if f not in (IGNORE, ATTRS) and not _inside(f, allowed)
+               and not _repo_file(space, f)]
     if outside:
         _must(space, "reset", "--quiet")
         shown = ", ".join(outside[:5]) + (f" and {len(outside) - 5} more" if len(outside) > 5 else "")
@@ -212,11 +213,18 @@ def _inside(path: str, rels) -> bool:
     return any(path == r or path.startswith(r + "/") for r in rels)
 
 
+def _repo_file(space: Space, path: str) -> bool:
+    """A file at the top of the space that the repository already holds, such as the README the
+    host added when the repository was created. It is not a note, and it is left as it is."""
+    return "/" not in path and _git(space, "cat-file", "-e", f"HEAD:{path}")[0] == 0
+
+
 def _untrack_outside(space: Space) -> None:
     """Stop tracking anything outside the shared folders (the files stay on disk). A knowledge
     base another device stopped sharing can come back through a local commit replayed on top."""
     allowed = shared(space)
-    stray = [f for f in _z(_must(space, "ls-files", "-z")) if f not in (IGNORE, ATTRS) and not _inside(f, allowed)]
+    stray = [f for f in _z(_must(space, "ls-files", "-z"))
+             if f not in (IGNORE, ATTRS) and "/" in f and not _inside(f, allowed)]
     if stray:
         _must(space, "rm", "--cached", "--quiet", "--ignore-unmatch", "--pathspec-from-file=-",
               "--pathspec-file-nul", stdin="\0".join(stray) + "\0")
@@ -357,13 +365,45 @@ def init(cfg: GlobalConfig, name: str = "personal", path=None, remote: str | Non
     ignore = space.path / IGNORE
     if ignore.exists() and not _is_ours(ignore):
         raise ValueError(f"{ignore} already exists and was not written by kbhub; move it away first")
-    if remote and _remote_has_notes(space, remote):
-        raise ValueError(f"{remote} already holds notes: use `kbhub share join {remote}` on this device")
+    started = bool(remote) and _remote_has_notes(space, remote)
     _create_repo(space)
+    if started:                              # not empty: a kbhub space to join, or just the host's README?
+        try:
+            _adopt(space)
+        except ValueError:
+            shutil.rmtree(git_dir(space), ignore_errors=True)
+            raise
     _write_text(ignore, ignore_text([]))     # a new space shares nothing, whatever an old file listed
     _write_text(space.path / ATTRS, ATTRS_TEXT)
     _commit(space, f"kbhub: start space {name}")
     return _save_spaces(cfg, [*cfg.spaces, space]), space
+
+
+def _adopt(space: Space) -> None:
+    """Start the space on top of what a new repository already holds, when that is only files at
+    its top level (the README, licence or .gitignore template a host adds). Those files are kept,
+    and written here when missing. A repository that is already a kbhub space is for `join`, and one
+    with folders in it is not a notes repository."""
+    remote = space.remote
+    code, _, err = _git(space, "fetch", "--quiet", "origin", timeout=60)
+    if code != 0:
+        raise ValueError(f"could not fetch {remote}: {_last_line(err)}")
+    if _text(_git(space, "show", f"{UPSTREAM}:{IGNORE}", raw=True)[1]).startswith(HEADER):
+        raise ValueError(f"{remote} already holds notes: use `kbhub share join {remote}` on this device")
+    files = _z(_must(space, "ls-tree", "-r", "--name-only", "-z", UPSTREAM))
+    other = [f for f in files if "/" in f or f in (IGNORE, ATTRS)]
+    if other:
+        raise ValueError(f"{remote} is not empty and is not a kbhub space (it holds "
+                         + ", ".join(other[:5]) + (" ..." if len(other) > 5 else "")
+                         + "). Use a new repository; one created with only a README or a licence is fine.")
+    clash = [f for f in files if (space.path / f).exists()
+             and _git(space, "hash-object", "--", f)[1].strip() != _git(space, "rev-parse", f"{UPSTREAM}:{f}")[1].strip()]
+    if clash:
+        raise ValueError(f"{remote} holds {', '.join(clash)}, and {space.path} has a different file of that "
+                         "name; move yours aside first")
+    _must(space, "update-ref", f"refs/heads/{BRANCH}", UPSTREAM)
+    _must(space, "read-tree", "HEAD")
+    _land(space)
 
 
 def _remote_has_notes(space: Space, remote: str) -> bool:
